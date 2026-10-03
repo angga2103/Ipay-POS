@@ -33,6 +33,12 @@ app.listen(PORT, () => {
       // ignore background poller errors
     }
   }, 20000);
+
+  // Start dynamic database auto-backup scheduler
+  import('./services/backup').then(({ BackupService }) => {
+    BackupService.startScheduler();
+    console.log('   - Dynamic Auto-Backup: Scheduler aktif');
+  }).catch(() => {});
 });
 
 export default app;

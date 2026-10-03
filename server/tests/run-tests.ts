@@ -22,6 +22,15 @@ async function runAllTests() {
   console.log('--- Test 1: PRD Hybrid Sale Auto-Journaling ---');
   const originalMode = (db.prepare("SELECT value FROM settings WHERE key = 'ipay_mode'").get() as any)?.value;
   db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('ipay_mode', 'sandbox')").run();
+  // Ensure deposit has sufficient test funds via balanced journal
+  AccountingService.createJournalEntry({
+    reference_type: 'TOPUP',
+    description: 'Test Deposit Injection',
+    lines: [
+      { account_code: '1-1003', debit: 2000000, credit: 0 },
+      { account_code: '3-1001', debit: 0, credit: 2000000 },
+    ],
+  });
   const initialKas = (db.prepare("SELECT balance FROM chart_of_accounts WHERE code = '1-1001'").get() as any).balance;
   const initialDeposit = (db.prepare("SELECT balance FROM chart_of_accounts WHERE code = '1-1003'").get() as any).balance;
 
@@ -129,7 +138,7 @@ async function runAllTests() {
   const trialBalance = AccountingService.getTrialBalance();
   assert(trialBalance.isBalanced, `Trial balance must be completely balanced (Total Debit: ${trialBalance.totalDebit}, Total Credit: ${trialBalance.totalCredit})`);
 
-  // Restore original settings
+  // Restore original mode setting
   if (originalMode) {
     db.prepare("UPDATE settings SET value = ? WHERE key = 'ipay_mode'").run(originalMode);
   }

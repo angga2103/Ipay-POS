@@ -1,11 +1,12 @@
 # 🛒 POS IPAY - Sistem Hybrid Web POS & Integrasi PPOB (`ipay.my.id`)
 
-[![Test Suite](https://img.shields.io/badge/Tests-4%2F4%20Passing%20(100%25)-brightgreen.svg)]()
+[![Test Suite](https://img.shields.io/badge/Tests-5%2F5%20Passing%20(100%25)-brightgreen.svg)]()
 [![Platform](https://img.shields.io/badge/Platform-Web%20POS%20%7C%20PWA%20Ready-blue.svg)]()
 [![Accounting](https://img.shields.io/badge/Accounting-Double--Entry%20Automated-purple.svg)]()
 [![Database](https://img.shields.io/badge/Database-SQLite%20WAL%20Mode-orange.svg)]()
+[![Deployment](https://img.shields.io/badge/Deployment-One--Click%20VPS%20Installer-blueviolet.svg)]()
 
-Aplikasi Kasir Web POS modern terpadu setara minimarket modern (Indomaret / Alfamart) dan konter handphone yang terintegrasi penuh dengan ekosistem produk digital **`ipay.my.id` (GarudaTel Engine)**. Didukung pembukuan akuntansi berpasangan (*Double-Entry Bookkeeping*) otomatis, manajemen inventaris Multi-Satuan (Multi-UOM), harga bertingkat grosir, pelacakan kedaluwarsa FEFO, manajemen IMEI smartphone, servis HP & gadget, plafon kasbon pelanggan, hutang supplier, serta rekonsiliasi shift kasir (X/Z-Report).
+Aplikasi Kasir Web POS modern terpadu setara minimarket modern (Indomaret / Alfamart) dan konter handphone yang terintegrasi penuh dengan ekosistem produk digital **`ipay.my.id` (GarudaTel Engine)**. Didukung pembukuan akuntansi berpasangan (*Double-Entry Bookkeeping*) otomatis, manajemen inventaris Multi-Satuan (Multi-UOM), harga bertingkat grosir, pelacakan kedaluwarsa FEFO, manajemen IMEI smartphone, servis HP & gadget, plafon kasbon pelanggan, hutang supplier, sistem dinamis auto-backup database, serta rekonsiliasi shift kasir (X/Z-Report).
 
 ---
 
@@ -19,9 +20,11 @@ Aplikasi Kasir Web POS modern terpadu setara minimarket modern (Indomaret / Alfa
   - [6. Supplier & Pelunasan Hutang Usaha](#6-supplier--pelunasan-hutang-usaha)
   - [7. Pembukuan Akuntansi Double-Entry & Day-1 Setup](#7-pembukuan-akuntansi-double-entry--day-1-setup)
   - [8. Sesi Shift Kasir & Rekonsiliasi Laci](#8-sesi-shift-kasir--rekonsiliasi-laci)
+  - [9. Sistem Dinamis Auto-Backup & Pemulihan Database](#9-sistem-dinamis-auto-backup--pemulihan-database)
+- [Deployment VPS (One-Click Installer)](#-deployment-vps-one-click-installer)
 - [Arsitektur & Tech Stack](#-arsitektur--tech-stack)
 - [Bagan Akun Akuntansi (Chart of Accounts)](#-bagan-akun-akuntansi-chart-of-accounts)
-- [Petunjuk Instalasi & Menjalankan](#-petunjuk-instalasi--menjalankan)
+- [Petunjuk Instalasi Lokal & Menjalankan](#-petunjuk-instalasi-lokal--menjalankan)
 - [Akun Pengguna Bawaan (RBAC)](#-akun-pengguna-bawaan-rbac)
 - [Integrasi API PPOB ipay.my.id](#-integrasi-api-ppob-ipaymyid)
 - [Suite Pengujian Otomatis (Automated Tests)](#-suite-pengujian-otomatis-automated-tests)
@@ -119,6 +122,41 @@ $$\text{Total Aset (Aktiva)} = \text{Total Hutang (Liabilitas)} + \text{Modal Pe
 * Pencatatan kas masuk / kas keluar operasional toko (<kbd>F10</kbd>).
 * Penutupan shift kasir dengan perhitungan uang fisik aktual vs ekspektasi sistem.
 * Cetak struk rekapitulasi shift (*X-Report* & *Z-Report*).
+
+---
+
+### 9. Sistem Dinamis Auto-Backup & Pemulihan Database
+* **Pencadangan Aman SQLite WAL:** Menggunakan SQLite Online Backup API yang 100% thread-safe dan non-blocking (kasir tetap lancar bertransaksi saat proses backup berjalan).
+* **Frekuensi Dinamis via Web:** Pengaturan frekuensi otomatis langsung dari menu Pengaturan (`Setiap 1 Jam`, `Setiap 6 Jam`, `Setiap 12 Jam`, `Harian`, atau `Mingguan`).
+* **Kebijakan Retensi Otomatis:** Otomatis menghapus file snapshot lama yang melampaui masa simpan (7, 14, 30, atau 60 hari) untuk menghemat ruang disk.
+* **Backup 1-Klik & Unduh Arsip:** Buat backup instan kapan saja dan langsung unduh file `.db` ke komputer kasir.
+* **Pemulihan Darurat (Restore):** Kemampuan mengembalikan database secara aman dari file snapshot dengan backup pra-pemulihan otomatis (*pre-restore snapshot*).
+
+---
+
+## 🚀 Deployment VPS (One-Click Installer)
+
+POS IPAY menyediakan skrip instalasi otomatis satu klik (`install.sh`) yang dirancang setara dengan arsitektur **GarudaTel**:
+
+### ⚡ Cara Install di Server VPS:
+```bash
+# 1. Kloning ke direktori server
+git clone https://github.com/angga2103/Ipay-POS.git /var/www/pos-ipay
+cd /var/www/pos-ipay
+
+# 2. Jalankan One-Click Installer
+sudo bash install.sh
+```
+
+### 🛡️ Fitur Skrip Installer:
+* **Interaktif Cloudflare Zero Trust Tunnel:** Meminta Cloudflare Tunnel Token (`eyJh...`) dan Domain Anda secara opsional untuk akses publik aman tanpa buka port router.
+* **Self-Healing APT Lock:** Otomatis melepaskan proses APT yang terkunci pada VPS baru.
+* **Node.js 20 LTS & Build Vite:** Menginstal dependensi sistem dan mengompilasi bundel frontend production.
+* **Systemd Daemon:** Mendaftarkan service `pos-ipay.service` dengan auto-restart saat server reboot.
+* **Cronjob Auto-Backup:** Memasang scheduler backup harian di crontab OS (`/var/www/pos-ipay/backup.sh`).
+* **Sertifikasi Health Check:** Verifikasi status live server hingga skor 100%.
+
+> 📖 *Panduan lengkap tersedia di: [PANDUAN_DEPLOYMENT_VPS.md](PANDUAN_DEPLOYMENT_VPS.md)*
 
 ---
 
@@ -279,6 +317,11 @@ npm test
    * Cetak Bukti Pengeluaran Kas (Voucher Termal 58mm/80mm) dengan kolom tanda tangan.
    * Live Status Banner: Verifikasi 4 pilar rekonsiliasi saldo awal Day 1.
    * Proteksi penghapusan data supplier berhutang aktif & arsip soft-delete.
+5. **Dynamic Auto-Backup & Rotation Test (`test-backup-system.ts`):**
+   * Pengaturan konfigurasi auto-backup dinamis.
+   * Pembuatan snapshot SQLite aman dengan `better-sqlite3.backup()`.
+   * Verifikasi metadata file dan pencegahan *path traversal* (`../../etc/passwd`).
+   * Rotasi pembersihan backup kadaluwarsa dan penghapusan aman.
 
 ---
 

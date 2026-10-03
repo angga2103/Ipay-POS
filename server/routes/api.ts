@@ -6,6 +6,7 @@ import { InventoryService } from '../services/inventory';
 import { ShiftService } from '../services/shift';
 import { ThermalPrinterService } from '../services/printer';
 import { ServiceDeskService } from '../services/service-desk';
+import { BackupService } from '../services/backup';
 
 export const apiRouter = Router();
 
@@ -1720,4 +1721,77 @@ apiRouter.get('/services/:id/receipt', (req: Request, res: Response) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+// ============================================================
+// 10. SISTEM DINAMIS AUTO-BACKUP & DATABASE RESTORATION
+// ============================================================
+
+apiRouter.get('/backup/settings', (_req: Request, res: Response) => {
+  try {
+    const settings = BackupService.getSettings();
+    res.json(settings);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+apiRouter.post('/backup/settings', (req: Request, res: Response) => {
+  try {
+    const updated = BackupService.updateSettings(req.body);
+    res.json({ success: true, settings: updated });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+apiRouter.get('/backup/list', (_req: Request, res: Response) => {
+  try {
+    const backups = BackupService.listBackups();
+    res.json(backups);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+apiRouter.post('/backup/create', async (req: Request, res: Response) => {
+  try {
+    const reason = req.body?.reason || 'manual';
+    const backupItem = await BackupService.createBackup(reason);
+    res.json({ success: true, backup: backupItem });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+apiRouter.get('/backup/download/:filename', (req: Request, res: Response) => {
+  try {
+    const filename = req.params.filename as string;
+    const filePath = BackupService.getBackupFilePath(filename);
+    res.download(filePath, filename);
+  } catch (err: any) {
+    res.status(404).json({ error: err.message });
+  }
+});
+
+apiRouter.delete('/backup/:filename', (req: Request, res: Response) => {
+  try {
+    const filename = req.params.filename as string;
+    BackupService.deleteBackup(filename);
+    res.json({ success: true, message: `Backup ${filename} berhasil dihapus` });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+apiRouter.post('/backup/restore', async (req: Request, res: Response) => {
+  try {
+    const { filename } = req.body;
+    if (!filename) return res.status(400).json({ error: 'Nama file backup diperlukan' });
+    await BackupService.restoreBackup(filename);
+    res.json({ success: true, message: `Database berhasil dipulihkan dari ${filename}` });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 
