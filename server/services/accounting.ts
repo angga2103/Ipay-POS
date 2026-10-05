@@ -22,6 +22,7 @@ export interface HybridSaleInput {
   total_ppob: number;
   total_ppob_cost: number;
   grand_total: number;
+  discount_amount?: number;
   payment_method: 'CASH' | 'QRIS' | 'EDC' | 'KASBON' | 'SPLIT';
   cash_amount?: number;
   non_cash_amount?: number;
@@ -153,6 +154,17 @@ export class AccountingService {
         debit: 0,
         credit: sale.total_ppob,
         memo: `Omzet produk digital PPOB ${sale.invoice_no}`,
+      });
+    }
+
+    // 2.1 Potongan & Diskon Penjualan (Contra-Revenue, Normal: DEBIT)
+    const discount = Math.round((sale.discount_amount || 0) * 100) / 100;
+    if (discount > 0) {
+      lines.push({
+        account_code: '4-1004', // Potongan & Diskon Penjualan
+        debit: discount,
+        credit: 0,
+        memo: `Diskon transaksi ${sale.invoice_no}`,
       });
     }
 

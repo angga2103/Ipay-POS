@@ -147,7 +147,14 @@ export class PPOBService {
     }
 
     // 2. Pre-check deposit balance
-    const currentBalance = (db.prepare("SELECT balance FROM chart_of_accounts WHERE code = '1-1003'").get() as any)?.balance || 0;
+    let currentBalance = (db.prepare("SELECT balance FROM chart_of_accounts WHERE code = '1-1003'").get() as any)?.balance || 0;
+    if (currentBalance < prod.base_price && config.mode === 'live') {
+      try {
+        const live = await this.getBalance();
+        currentBalance = live.balance;
+      } catch {}
+    }
+
     if (currentBalance < prod.base_price) {
       throw new Error(`Saldo deposit ipay.my.id tidak mencukupi! Sisa: Rp ${currentBalance.toLocaleString('id-ID')}, Diperlukan: Rp ${prod.base_price.toLocaleString('id-ID')}`);
     }

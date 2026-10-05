@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
 import { AsyncLocalStorage } from 'async_hooks';
+import { hashSecret } from '../utils/auth-token';
 
 // AsyncLocalStorage store for per-request tenant database resolution
 export interface TenantContext {
@@ -53,7 +54,6 @@ export function initTenantDatabase(tenantDb: Database.Database, tenantId: string
   try { tenantDb.exec("ALTER TABLE products ADD COLUMN requires_imei INTEGER NOT NULL DEFAULT 0"); } catch {}
   try { tenantDb.exec("ALTER TABLE order_items ADD COLUMN imei_sn TEXT"); } catch {}
   try { tenantDb.exec("ALTER TABLE customers ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1"); } catch {}
-
   // Customer debt payments table
   tenantDb.exec(`
     CREATE TABLE IF NOT EXISTS customer_debt_payments (
@@ -108,31 +108,29 @@ export function initTenantDatabase(tenantDb: Database.Database, tenantId: string
     );
   `);
 
-  // Foundation: Seed Chart of Accounts if empty
-  const coaCount = (tenantDb.prepare('SELECT COUNT(*) as count FROM chart_of_accounts').get() as any)?.count || 0;
-  if (coaCount === 0) {
-    const coaData = [
-      { code: '1-1001', name: 'Kas Laci Kasir (Cash in Drawer)', type: 'ASSET', normal: 'DEBIT', balance: 0 },
-      { code: '1-1002', name: 'Kas Bank / Rekening Toko', type: 'ASSET', normal: 'DEBIT', balance: 0 },
-      { code: '1-1003', name: 'Deposit Saldo PPOB (ipay.my.id)', type: 'ASSET', normal: 'DEBIT', balance: 0 },
-      { code: '1-1004', name: 'Piutang Usaha / Kasbon Pelanggan', type: 'ASSET', normal: 'DEBIT', balance: 0 },
-      { code: '1-1005', name: 'Persediaan Barang Dagangan (Inventory)', type: 'ASSET', normal: 'DEBIT', balance: 0 },
-      { code: '2-1001', name: 'Hutang Usaha / Supplier', type: 'LIABILITY', normal: 'CREDIT', balance: 0 },
-      { code: '3-1001', name: 'Modal Pemilik', type: 'EQUITY', normal: 'CREDIT', balance: 0 },
-      { code: '4-1001', name: 'Pendapatan Penjualan Ritel', type: 'REVENUE', normal: 'CREDIT', balance: 0 },
-      { code: '4-1002', name: 'Pendapatan Penjualan PPOB (ipay.my.id)', type: 'REVENUE', normal: 'CREDIT', balance: 0 },
-      { code: '4-1003', name: 'Pendapatan Lain-lain (Admin Fee)', type: 'REVENUE', normal: 'CREDIT', balance: 0 },
-      { code: '5-1001', name: 'HPP Barang Dagangan Ritel', type: 'EXPENSE', normal: 'DEBIT', balance: 0 },
-      { code: '5-1002', name: 'HPP Produk Digital PPOB', type: 'EXPENSE', normal: 'DEBIT', balance: 0 },
-      { code: '5-1003', name: 'Beban Selisih Kas / Operasional', type: 'EXPENSE', normal: 'DEBIT', balance: 0 },
-    ];
-    const insertCoa = tenantDb.prepare(`
-      INSERT OR REPLACE INTO chart_of_accounts (code, name, type, normal_balance, balance)
-      VALUES (?, ?, ?, ?, ?)
-    `);
-    for (const acc of coaData) {
-      insertCoa.run(acc.code, acc.name, acc.type, acc.normal, acc.balance);
-    }
+  // Foundation: Seed Chart of Accounts (COA)
+  const coaData = [
+    { code: '1-1001', name: 'Kas Laci Kasir (Cash in Drawer)', type: 'ASSET', normal: 'DEBIT', balance: 0 },
+    { code: '1-1002', name: 'Kas Bank / Rekening Toko', type: 'ASSET', normal: 'DEBIT', balance: 0 },
+    { code: '1-1003', name: 'Deposit Saldo PPOB (ipay.my.id)', type: 'ASSET', normal: 'DEBIT', balance: 0 },
+    { code: '1-1004', name: 'Piutang Usaha / Kasbon Pelanggan', type: 'ASSET', normal: 'DEBIT', balance: 0 },
+    { code: '1-1005', name: 'Persediaan Barang Dagangan (Inventory)', type: 'ASSET', normal: 'DEBIT', balance: 0 },
+    { code: '2-1001', name: 'Hutang Usaha / Supplier', type: 'LIABILITY', normal: 'CREDIT', balance: 0 },
+    { code: '3-1001', name: 'Modal Pemilik', type: 'EQUITY', normal: 'CREDIT', balance: 0 },
+    { code: '4-1001', name: 'Pendapatan Penjualan Ritel', type: 'REVENUE', normal: 'CREDIT', balance: 0 },
+    { code: '4-1002', name: 'Pendapatan Penjualan PPOB (ipay.my.id)', type: 'REVENUE', normal: 'CREDIT', balance: 0 },
+    { code: '4-1003', name: 'Pendapatan Lain-lain (Admin Fee)', type: 'REVENUE', normal: 'CREDIT', balance: 0 },
+    { code: '4-1004', name: 'Potongan & Diskon Penjualan', type: 'REVENUE', normal: 'DEBIT', balance: 0 },
+    { code: '5-1001', name: 'HPP Barang Dagangan Ritel', type: 'EXPENSE', normal: 'DEBIT', balance: 0 },
+    { code: '5-1002', name: 'HPP Produk Digital PPOB', type: 'EXPENSE', normal: 'DEBIT', balance: 0 },
+    { code: '5-1003', name: 'Beban Selisih Kas / Operasional', type: 'EXPENSE', normal: 'DEBIT', balance: 0 },
+  ];
+  const insertCoa = tenantDb.prepare(`
+    INSERT OR IGNORE INTO chart_of_accounts (code, name, type, normal_balance, balance)
+    VALUES (?, ?, ?, ?, ?)
+  `);
+  for (const acc of coaData) {
+    insertCoa.run(acc.code, acc.name, acc.type, acc.normal, acc.balance);
   }
 
   // Foundation: Seed Default Users if empty
@@ -142,8 +140,8 @@ export function initTenantDatabase(tenantDb: Database.Database, tenantId: string
       INSERT INTO users (username, password, name, role, pin)
       VALUES (?, ?, ?, ?, ?)
     `);
-    insertUser.run('owner', 'admin123', storeName ? `Pemilik (${storeName})` : `Owner (${tenantId})`, 'owner', '112233');
-    insertUser.run('kasir1', 'kasir123', 'Kasir Utama', 'cashier', '123456');
+    insertUser.run('owner', hashSecret('admin123'), storeName ? `Pemilik (${storeName})` : `Owner (${tenantId})`, 'owner', hashSecret('112233'));
+    insertUser.run('kasir1', hashSecret('kasir123'), 'Kasir Utama', 'cashier', hashSecret('123456'));
   }
 
   // Foundation: Seed Categories if empty

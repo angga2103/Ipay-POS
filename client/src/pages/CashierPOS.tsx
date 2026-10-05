@@ -14,6 +14,7 @@ import { CashInOutModal } from '../components/CashInOutModal';
 import { ProductSearchModal } from '../components/ProductSearchModal';
 import { ReceiptModal } from '../components/ReceiptModal';
 import { IMEIPromptModal } from '../components/IMEIPromptModal';
+import { DiscountModal } from '../components/DiscountModal';
 import { Product } from '../types';
 
 export const CashierPOS: React.FC = () => {
@@ -43,6 +44,7 @@ export const CashierPOS: React.FC = () => {
   const [isCashInOutOpen, setIsCashInOutOpen] = useState(false);
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [isReceiptOpen, setIsReceiptOpen] = useState(false);
+  const [isDiscountOpen, setIsDiscountOpen] = useState(false);
   const [lastReceiptText, setLastReceiptText] = useState('');
   const [lastOrder, setLastOrder] = useState<any>(null);
   const [lastOrderItems, setLastOrderItems] = useState<any[]>([]);
@@ -93,10 +95,7 @@ export const CashierPOS: React.FC = () => {
           setIsHoldRecallOpen(true);
           break;
         case 'F9':
-          const discountStr = prompt('Masukkan Diskon Total Transaksi (Rp):', String(overallDiscount));
-          if (discountStr !== null) {
-            setOverallDiscount(Math.max(0, parseFloat(discountStr) || 0));
-          }
+          setIsDiscountOpen(true);
           break;
         case 'F10':
           setIsCashInOutOpen(true);
@@ -113,6 +112,7 @@ export const CashierPOS: React.FC = () => {
           setIsCashInOutOpen(false);
           setIsSearchOpen(false);
           setIsReceiptOpen(false);
+          setIsDiscountOpen(false);
           setIsIMEIOpen(false);
           barcodeInputRef.current?.focus();
           break;
@@ -121,7 +121,7 @@ export const CashierPOS: React.FC = () => {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [items.length, overallDiscount]);
+  }, [items.length]);
 
   // Central handler to add product (with IMEI interception if required)
   const handleProductSelect = (prod: Product, unitName?: string) => {
@@ -515,9 +515,14 @@ export const CashierPOS: React.FC = () => {
               <div className="text-right text-[11px] text-slate-300 space-y-0.5">
                 <div>Ritel: Rp {totalRetail.toLocaleString('id-ID')}</div>
                 <div>PPOB: Rp {totalPPOB.toLocaleString('id-ID')}</div>
-                {overallDiscount > 0 && (
-                  <div className="text-rose-400 font-bold">Disc: -Rp {overallDiscount.toLocaleString('id-ID')}</div>
-                )}
+                <button
+                  type="button"
+                  onClick={() => setIsDiscountOpen(true)}
+                  className="inline-flex items-center gap-1 font-bold text-amber-300 hover:text-amber-200 cursor-pointer underline transition-colors"
+                >
+                  <Tag className="w-3 h-3" />
+                  {overallDiscount > 0 ? `Disc: -Rp ${overallDiscount.toLocaleString('id-ID')}` : '+ Diskon (F9)'}
+                </button>
               </div>
             </div>
 
@@ -583,6 +588,14 @@ export const CashierPOS: React.FC = () => {
           lastOrderItems?.find((it: any) => it.ppob_target_no)?.ppob_target_no || 
           ''
         }
+      />
+
+      <DiscountModal
+        isOpen={isDiscountOpen}
+        onClose={() => setIsDiscountOpen(false)}
+        currentDiscount={overallDiscount}
+        subtotal={totalRetail + totalPPOB}
+        onApply={(amt) => setOverallDiscount(amt)}
       />
 
       {/* Konter HP IMEI Prompt Modal */}

@@ -64,6 +64,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // Reset active user on tenant switch
     setCurrentUser(null);
     localStorage.removeItem('pos_user');
+    localStorage.removeItem('pos_auth_token');
   };
 
   const login = async (username: string, password: string): Promise<boolean> => {
@@ -77,6 +78,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         const data = await res.json();
         setCurrentUser(data.user);
         localStorage.setItem('pos_user', JSON.stringify(data.user));
+        if (data.token) localStorage.setItem('pos_auth_token', data.token);
         return true;
       }
       return false;
@@ -96,6 +98,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         const data = await res.json();
         setCurrentUser(data.user);
         localStorage.setItem('pos_user', JSON.stringify(data.user));
+        if (data.token) localStorage.setItem('pos_auth_token', data.token);
         return true;
       }
       return false;
@@ -107,6 +110,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const logout = () => {
     setCurrentUser(null);
     localStorage.removeItem('pos_user');
+    localStorage.removeItem('pos_auth_token');
   };
 
   const switchUser = (userId: number) => {

@@ -1,7 +1,8 @@
 import { Router, Request, Response } from 'express';
 import crypto from 'crypto';
 import db from '../db/database';
-import { getTenantDatabase } from '../db/tenant';
+import { getTenantDatabase, tenantContext } from '../db/tenant';
+import { createAuthToken, verifySecret } from '../utils/auth-token';
 import { AccountingService } from '../services/accounting';
 import { PPOBService } from '../services/ppob';
 import { InventoryService } from '../services/inventory';
@@ -29,29 +30,35 @@ db.exec(`
 // ============================================================
 apiRouter.post('/auth/login', (req: Request, res: Response) => {
   const { username, password } = req.body;
-  const user = db.prepare('SELECT id, username, name, role, pin FROM users WHERE username = ? AND password = ?').get(username, password) as any;
-  if (!user) {
+  const user = db.prepare('SELECT id, username, password, name, role, pin FROM users WHERE username = ?').get(username) as any;
+  if (!user || !verifySecret(password, user.password)) {
     return res.status(401).json({ error: 'Username atau password salah' });
   }
-  res.json({ user: { id: user.id, username: user.username, name: user.name, role: user.role } });
+  const tenantId = req.tenantId || 'default';
+  const token = createAuthToken({ tenantId, userId: user.id, username: user.username, role: user.role });
+  res.json({ token, tenantId, user: { id: user.id, username: user.username, name: user.name, role: user.role } });
 });
 
 apiRouter.post('/auth/login-pin', (req: Request, res: Response) => {
   const { pin } = req.body;
-  const user = db.prepare('SELECT id, username, name, role FROM users WHERE pin = ?').get(pin) as any;
+  const allUsers = db.prepare('SELECT id, username, name, role, pin FROM users').all() as any[];
+  const user = allUsers.find(u => verifySecret(pin, u.pin));
   if (!user) {
     return res.status(401).json({ error: 'PIN tidak terdaftar' });
   }
-  res.json({ user: { id: user.id, username: user.username, name: user.name, role: user.role } });
+  const tenantId = req.tenantId || 'default';
+  const token = createAuthToken({ tenantId, userId: user.id, username: user.username, role: user.role });
+  res.json({ token, tenantId, user: { id: user.id, username: user.username, name: user.name, role: user.role } });
 });
 
 apiRouter.post('/auth/verify-pin', (req: Request, res: Response) => {
   const { pin } = req.body;
-  const supervisor = db.prepare("SELECT id, name, role FROM users WHERE pin = ? AND role IN ('owner', 'supervisor')").get(pin) as any;
+  const supervisors = db.prepare("SELECT id, name, role, pin FROM users WHERE role IN ('owner', 'supervisor')").all() as any[];
+  const supervisor = supervisors.find(s => verifySecret(pin, s.pin));
   if (!supervisor) {
     return res.status(403).json({ success: false, error: 'PIN Otorisasi Supervisor salah' });
   }
-  res.json({ success: true, user: supervisor });
+  res.json({ success: true, user: { id: supervisor.id, name: supervisor.name, role: supervisor.role } });
 });
 
 apiRouter.get('/users', (_req: Request, res: Response) => {
@@ -62,6 +69,88 @@ apiRouter.get('/users', (_req: Request, res: Response) => {
 // ============================================================
 // 1.1 GARUDATEL SSO & MULTI-TENANT MANAGEMENT
 // ============================================================
+apiRouter.post('/auth/sso-exchange', async (req: Request, res: Response) => {
+  try {
+    const { sso_code, base_url } = req.body;
+    if (!sso_code) {
+      return res.status(400).json({ success: false, error: 'Kode tiket SSO tidak diberikan' });
+    }
+
+    const garudaBaseUrl = (base_url || 'https://ipay.my.id').replace(/\/+$/, '');
+    const exchangeUrl = `${garudaBaseUrl}/api/v1/auth/sso/exchange`;
+
+    const exRes = await fetch(exchangeUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sso_code }),
+    });
+
+    const exData = await exRes.json() as any;
+    if (!exRes.ok || exData.status !== 'success' || !exData.data) {
+      return res.status(401).json({ success: false, error: exData.message || 'Tiket SSO tidak valid atau sudah kedaluwarsa' });
+    }
+
+    const { merchant_id, api_key, secret_key, name, phone } = exData.data;
+    const storeName = name ? `KONTER ${name.toUpperCase()}` : `KONTER ${merchant_id}`;
+    const tenantDb = getTenantDatabase(merchant_id, storeName);
+
+    // Konfigurasi otomatis PPOB & pengaturan toko di database tenant
+    const insertSetting = tenantDb.prepare(`
+      INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)
+    `);
+    insertSetting.run('ipay_api_key', api_key);
+    insertSetting.run('ipay_merchant_id', merchant_id);
+    insertSetting.run('ipay_secret_key', secret_key);
+    insertSetting.run('ipay_mode', 'live');
+    insertSetting.run('ipay_base_url', garudaBaseUrl);
+    insertSetting.run('store_name', storeName);
+    if (phone) insertSetting.run('store_phone', phone);
+
+    let ownerUser = tenantDb.prepare("SELECT id, username, name, role FROM users WHERE role = 'owner' LIMIT 1").get() as any;
+    if (!ownerUser) {
+      tenantDb.prepare(`
+        INSERT INTO users (username, password, name, role, pin)
+        VALUES ('owner', 'admin123', ?, 'owner', '112233')
+      `).run(name || 'Pemilik Toko');
+      ownerUser = tenantDb.prepare("SELECT id, username, name, role FROM users WHERE role = 'owner' LIMIT 1").get() as any;
+    } else if (name) {
+      tenantDb.prepare("UPDATE users SET name = ? WHERE id = ?").run(name, ownerUser.id);
+      ownerUser.name = name;
+    }
+
+    const token = createAuthToken({
+      tenantId: merchant_id,
+      userId: ownerUser.id,
+      username: ownerUser.username,
+      role: ownerUser.role,
+    });
+
+    // Auto-sync saldo awal
+    try {
+      tenantContext.run({ tenantId: merchant_id, db: tenantDb }, async () => {
+        await PPOBService.getBalance();
+      });
+    } catch {}
+
+    res.json({
+      success: true,
+      token,
+      tenantId: merchant_id,
+      user: {
+        id: ownerUser.id,
+        username: ownerUser.username,
+        name: ownerUser.name,
+        role: ownerUser.role,
+      },
+      storeName,
+      message: 'Berhasil login melalui SSO GarudaTel',
+    });
+  } catch (err: any) {
+    console.error('[SSO Exchange Error]:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 apiRouter.post('/auth/garudatel-sso', (req: Request, res: Response) => {
   try {
     const { merchant_id, api_key, secret_key, name, phone, timestamp, signature, base_url } = req.body;
@@ -112,8 +201,23 @@ apiRouter.post('/auth/garudatel-sso', (req: Request, res: Response) => {
       ownerUser.name = name;
     }
 
+    const token = createAuthToken({
+      tenantId: merchant_id,
+      userId: ownerUser.id,
+      username: ownerUser.username,
+      role: ownerUser.role,
+    });
+
+    // Auto-sync saldo awal ke akun 1-1003
+    try {
+      tenantContext.run({ tenantId: merchant_id, db: tenantDb }, async () => {
+        await PPOBService.getBalance();
+      });
+    } catch {}
+
     res.json({
       success: true,
+      token,
       tenantId: merchant_id,
       user: {
         id: ownerUser.id,
@@ -855,6 +959,7 @@ apiRouter.post('/orders', async (req: Request, res: Response) => {
         total_ppob: totalPPOB,
         total_ppob_cost: totalPPOBCost,
         grand_total: grandTotal,
+        discount_amount: discount,
         payment_method,
         cash_amount: payment_method === 'CASH' ? grandTotal : (split_details?.cash || 0),
         non_cash_amount: payment_method !== 'CASH' ? (split_details?.non_cash || grandTotal) : 0,
@@ -936,7 +1041,8 @@ apiRouter.post('/orders/:id/void', (req: Request, res: Response) => {
     const orderId = parseInt(req.params.id as string, 10);
     const { supervisorPin, reason } = req.body;
 
-    const supervisor = db.prepare("SELECT id, name FROM users WHERE pin = ? AND role IN ('owner', 'supervisor')").get(supervisorPin) as any;
+    const supervisors = db.prepare("SELECT id, name, role, pin FROM users WHERE role IN ('owner', 'supervisor')").all() as any[];
+    const supervisor = supervisors.find(s => verifySecret(supervisorPin, s.pin));
     if (!supervisor) {
       return res.status(403).json({ error: 'PIN Otorisasi Supervisor tidak valid' });
     }
@@ -946,6 +1052,14 @@ apiRouter.post('/orders/:id/void', (req: Request, res: Response) => {
     if (order.status !== 'PAID') return res.status(400).json({ error: 'Hanya transaksi PAID yang dapat di-void' });
 
     const items = db.prepare('SELECT * FROM order_items WHERE order_id = ?').all(orderId) as any[];
+
+    // Proteksi: Jangan izinkan void jika produk PPOB telah sukses terkirim ke pelanggan
+    const hasSuccessfulPPOB = items.some(it => it.item_type === 'PPOB' && (it.ppob_status === 'SUCCESS' || it.ppob_status === 'SUKSES'));
+    if (hasSuccessfulPPOB) {
+      return res.status(400).json({
+        error: 'Transaksi tidak dapat di-void karena produk PPOB telah berhasil terkirim ke nomor pelanggan.'
+      });
+    }
 
     const voidTransaction = db.transaction(() => {
       // 1. Restore retail stock
@@ -967,20 +1081,35 @@ apiRouter.post('/orders/:id/void', (req: Request, res: Response) => {
       const lines: any[] = [];
       if (order.payment_method === 'CASH') {
         lines.push({ account_code: '1-1001', debit: 0, credit: order.grand_total, memo: `Refund kas laci void ${order.invoice_no}` });
+      } else if (order.payment_method === 'KASBON') {
+        lines.push({ account_code: '1-1004', debit: 0, credit: order.grand_total, memo: `Pembalik piutang kasbon void ${order.invoice_no}` });
+        if (order.customer_id) {
+          db.prepare('UPDATE customers SET current_debt = MAX(0, current_debt - ?) WHERE id = ?').run(order.grand_total, order.customer_id);
+        }
       } else {
-        lines.push({ account_code: '1-1002', debit: 0, credit: order.grand_total, memo: `Refund bank void ${order.invoice_no}` });
+        lines.push({ account_code: '1-1002', debit: 0, credit: order.grand_total, memo: `Refund non-tunai void ${order.invoice_no}` });
       }
+
+      // Pembalik diskon jika ada
+      if (order.discount_amount > 0) {
+        lines.push({ account_code: '4-1004', debit: 0, credit: order.discount_amount, memo: `Pembalik diskon void ${order.invoice_no}` });
+      }
+
+      // Hitung HPP aktual ritel dari order_items
+      const actualRetailCost = items
+        .filter(it => it.item_type === 'RETAIL')
+        .reduce((sum, it) => sum + ((it.cost_price || 0) * (it.quantity || 1)), 0);
 
       if (order.total_retail > 0) {
         lines.push({ account_code: '4-1001', debit: order.total_retail, credit: 0, memo: `Pembatalan omzet ritel ${order.invoice_no}` });
-        lines.push({ account_code: '1-1005', debit: order.total_retail * 0.8, credit: 0, memo: `Pengembalian stok ritel ${order.invoice_no}` });
-        lines.push({ account_code: '5-1001', debit: 0, credit: order.total_retail * 0.8, memo: `Pembalikan HPP ritel ${order.invoice_no}` });
+        if (actualRetailCost > 0) {
+          lines.push({ account_code: '1-1005', debit: actualRetailCost, credit: 0, memo: `Pengembalian stok ritel ${order.invoice_no}` });
+          lines.push({ account_code: '5-1001', debit: 0, credit: actualRetailCost, memo: `Pembalikan HPP ritel ${order.invoice_no}` });
+        }
       }
 
       if (order.total_ppob > 0) {
         lines.push({ account_code: '4-1002', debit: order.total_ppob, credit: 0, memo: `Pembatalan omzet PPOB ${order.invoice_no}` });
-        lines.push({ account_code: '1-1003', debit: order.total_ppob * 0.95, credit: 0, memo: `Pengembalian deposit PPOB ${order.invoice_no}` });
-        lines.push({ account_code: '5-1002', debit: 0, credit: order.total_ppob * 0.95, memo: `Pembalikan HPP PPOB ${order.invoice_no}` });
       }
 
       AccountingService.createJournalEntry({

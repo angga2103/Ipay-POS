@@ -42,9 +42,6 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose, onS
         .then(data => {
           if (Array.isArray(data)) {
             setCustomers(data);
-            if (data.length > 0 && !selectedCustomerId) {
-              setSelectedCustomerId(data[0].id);
-            }
           }
         })
         .catch(err => console.error('Failed to load customers for kasbon:', err));

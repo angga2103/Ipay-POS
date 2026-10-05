@@ -1,7 +1,7 @@
 import path from 'path';
 import fs from 'fs';
 import db from '../db/database';
-import { tenantContext, getAllTenantIds, getTenantDatabase } from '../db/tenant';
+import { tenantContext, getAllTenantIds, getTenantDatabase, closeTenantDatabase } from '../db/tenant';
 
 export interface BackupItem {
   filename: string;
@@ -199,16 +199,22 @@ export class BackupService {
     // 1. Create a safety snapshot before restoring
     await this.createBackup('pre_restore');
 
-    // 2. Perform restore safely by checkpointing and copying over
+    // 2. Perform restore safely by checkpointing and closing the active pool connection
     try {
       db.pragma('wal_checkpoint(TRUNCATE)');
     } catch {}
+
+    // Tutup koneksi database agar file lock di OS Windows terlepas sempurna
+    closeTenantDatabase(tenantId);
 
     fs.copyFileSync(backupFilePath, liveDbPath);
 
     // Remove old wal/shm if present
     try { fs.unlinkSync(`${liveDbPath}-wal`); } catch {}
     try { fs.unlinkSync(`${liveDbPath}-shm`); } catch {}
+
+    // Buka kembali koneksi database baru dari pool
+    getTenantDatabase(tenantId);
 
     return true;
   }
