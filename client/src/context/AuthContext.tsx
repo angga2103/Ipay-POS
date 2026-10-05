@@ -1,9 +1,12 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { User } from '../types';
+import { User, UserRole } from '../types';
 
 interface AuthContextType {
   currentUser: User | null;
   users: User[];
+  tenantId: string;
+  storeName: string;
+  setTenant: (tenantId: string) => void;
   login: (username: string, password: string) => Promise<boolean>;
   loginWithPin: (pin: string) => Promise<boolean>;
   logout: () => void;
@@ -15,6 +18,12 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const [tenantId, setTenantIdState] = useState<string>(() => {
+    return localStorage.getItem('pos_tenant_id') || 'default';
+  });
+
+  const [storeName, setStoreName] = useState<string>('Memuat Toko...');
+
   const [currentUser, setCurrentUser] = useState<User | null>(() => {
     const saved = localStorage.getItem('pos_user');
     if (!saved) return null;
@@ -27,12 +36,35 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const [users, setUsers] = useState<User[]>([]);
 
+  // Load tenant info & users whenever tenantId changes
   useEffect(() => {
+    fetch('/api/tenant/info')
+      .then(res => res.json())
+      .then(data => {
+        if (data.storeName) {
+          setStoreName(data.storeName);
+        }
+      })
+      .catch(() => {
+        setStoreName(`KONTER ${tenantId.toUpperCase()}`);
+      });
+
     fetch('/api/users')
       .then(res => res.json())
-      .then(data => setUsers(data))
+      .then(data => {
+        if (Array.isArray(data)) setUsers(data);
+      })
       .catch(err => console.error('Failed to load users:', err));
-  }, []);
+  }, [tenantId]);
+
+  const setTenant = (newTenantId: string) => {
+    const clean = newTenantId.trim() || 'default';
+    setTenantIdState(clean);
+    localStorage.setItem('pos_tenant_id', clean);
+    // Reset active user on tenant switch
+    setCurrentUser(null);
+    localStorage.removeItem('pos_user');
+  };
 
   const login = async (username: string, password: string): Promise<boolean> => {
     try {
@@ -105,7 +137,21 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   return (
-    <AuthContext.Provider value={{ currentUser, users, login, loginWithPin, logout, switchUser, verifySupervisorPin, hasRole }}>
+    <AuthContext.Provider
+      value={{
+        currentUser,
+        users,
+        tenantId,
+        storeName,
+        setTenant,
+        login,
+        loginWithPin,
+        logout,
+        switchUser,
+        verifySupervisorPin,
+        hasRole
+      }}
+    >
       {children}
     </AuthContext.Provider>
   );

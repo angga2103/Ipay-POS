@@ -1,5 +1,7 @@
 import { Router, Request, Response } from 'express';
+import crypto from 'crypto';
 import db from '../db/database';
+import { getTenantDatabase } from '../db/tenant';
 import { AccountingService } from '../services/accounting';
 import { PPOBService } from '../services/ppob';
 import { InventoryService } from '../services/inventory';
@@ -55,6 +57,93 @@ apiRouter.post('/auth/verify-pin', (req: Request, res: Response) => {
 apiRouter.get('/users', (_req: Request, res: Response) => {
   const users = db.prepare('SELECT id, username, name, role FROM users').all();
   res.json(users);
+});
+
+// ============================================================
+// 1.1 GARUDATEL SSO & MULTI-TENANT MANAGEMENT
+// ============================================================
+apiRouter.post('/auth/garudatel-sso', (req: Request, res: Response) => {
+  try {
+    const { merchant_id, api_key, secret_key, name, phone, timestamp, signature, base_url } = req.body;
+
+    if (!merchant_id || !secret_key || !signature || !timestamp) {
+      return res.status(400).json({ success: false, error: 'Parameter SSO tidak lengkap' });
+    }
+
+    // 1. Verifikasi MD5 Signature: MD5(merchant_id + secret_key + timestamp)
+    const expectedSign = crypto.createHash('md5').update(`${merchant_id}${secret_key}${timestamp}`).digest('hex').toLowerCase();
+    if (signature.toLowerCase() !== expectedSign) {
+      return res.status(403).json({ success: false, error: 'Signature SSO GarudaTel tidak valid' });
+    }
+
+    // 2. Periksa toleransi waktu timestamp (maksimal 15 menit)
+    const nowSec = Math.floor(Date.now() / 1000);
+    const tsSec = parseInt(timestamp, 10);
+    if (Math.abs(nowSec - tsSec) > 900) {
+      return res.status(403).json({ success: false, error: 'Token SSO telah kedaluwarsa. Silakan refresh halaman GarudaTel.' });
+    }
+
+    // 3. Pastikan database tenant terinisialisasi
+    const storeName = name ? `KONTER ${name.toUpperCase()}` : `KONTER ${merchant_id}`;
+    const tenantDb = getTenantDatabase(merchant_id, storeName);
+
+    // 4. Konfigurasi otomatis PPOB & pengaturan toko di database tenant
+    const insertSetting = tenantDb.prepare(`
+      INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)
+    `);
+    insertSetting.run('ipay_api_key', api_key);
+    insertSetting.run('ipay_merchant_id', merchant_id);
+    insertSetting.run('ipay_secret_key', secret_key);
+    insertSetting.run('ipay_mode', 'live');
+    insertSetting.run('ipay_base_url', base_url || 'https://ipay.my.id');
+    insertSetting.run('store_name', storeName);
+    if (phone) insertSetting.run('store_phone', phone);
+
+    // 5. Pastikan akun pemilik (owner) siap di database tenant
+    let ownerUser = tenantDb.prepare("SELECT id, username, name, role FROM users WHERE role = 'owner' LIMIT 1").get() as any;
+    if (!ownerUser) {
+      tenantDb.prepare(`
+        INSERT INTO users (username, password, name, role, pin)
+        VALUES ('owner', 'admin123', ?, 'owner', '112233')
+      `).run(name || 'Pemilik Toko');
+      ownerUser = tenantDb.prepare("SELECT id, username, name, role FROM users WHERE role = 'owner' LIMIT 1").get() as any;
+    } else if (name) {
+      tenantDb.prepare("UPDATE users SET name = ? WHERE id = ?").run(name, ownerUser.id);
+      ownerUser.name = name;
+    }
+
+    res.json({
+      success: true,
+      tenantId: merchant_id,
+      user: {
+        id: ownerUser.id,
+        username: ownerUser.username,
+        name: ownerUser.name,
+        role: ownerUser.role,
+      },
+      storeName,
+      message: 'Berhasil login melalui SSO GarudaTel',
+    });
+  } catch (err: any) {
+    console.error('[SSO Error]:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+apiRouter.get('/tenant/info', (req: Request, res: Response) => {
+  try {
+    const tenantId = req.tenantId || 'default';
+    const rowName = db.prepare("SELECT value FROM settings WHERE key = 'store_name'").get() as any;
+    const rowMerchant = db.prepare("SELECT value FROM settings WHERE key = 'ipay_merchant_id'").get() as any;
+    res.json({
+      tenantId,
+      storeName: rowName?.value || `KONTER ${tenantId.toUpperCase()}`,
+      merchantId: rowMerchant?.value || '',
+      isMultiTenant: true,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ============================================================

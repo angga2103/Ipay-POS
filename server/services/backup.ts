@@ -1,6 +1,7 @@
 import path from 'path';
 import fs from 'fs';
 import db from '../db/database';
+import { tenantContext, getAllTenantIds, getTenantDatabase } from '../db/tenant';
 
 export interface BackupItem {
   filename: string;
@@ -37,6 +38,13 @@ export class BackupService {
     const sizes = ['B', 'KB', 'MB', 'GB'];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return `${(bytes / Math.pow(k, i)).toFixed(2)} ${sizes[i]}`;
+  }
+
+  /**
+   * Current active tenant ID
+   */
+  private static getCurrentTenantId(): string {
+    return tenantContext.getStore()?.tenantId || 'default';
   }
 
   /**
@@ -87,6 +95,7 @@ export class BackupService {
    */
   static async createBackup(reason = 'manual'): Promise<BackupItem> {
     this.ensureDir();
+    const tenantId = this.getCurrentTenantId();
 
     const now = new Date();
     const timestampStr = now.toISOString()
@@ -94,7 +103,7 @@ export class BackupService {
       .replace(/:/g, '-')
       .replace(/\..+/, '');
     
-    const filename = `pos_backup_${timestampStr}_${reason}.db`;
+    const filename = `pos_backup_${tenantId}_${timestampStr}_${reason}.db`;
     const targetPath = path.join(this.backupDir, filename);
 
     // Use better-sqlite3 native safe online backup
@@ -117,26 +126,34 @@ export class BackupService {
   }
 
   /**
-   * List all available backups
+   * List all available backups for the current tenant
    */
   static listBackups(): BackupItem[] {
     this.ensureDir();
+    const tenantId = this.getCurrentTenantId();
 
     const files = fs.readdirSync(this.backupDir);
     const backups: BackupItem[] = [];
 
     for (const file of files) {
       if (file.endsWith('.db')) {
-        const filePath = path.join(this.backupDir, file);
-        try {
-          const stats = fs.statSync(filePath);
-          backups.push({
-            filename: file,
-            sizeBytes: stats.size,
-            sizeFormatted: this.formatBytes(stats.size),
-            createdAt: stats.mtime.toISOString(),
-          });
-        } catch {}
+        // Filter by tenant prefix
+        const isMatch = tenantId === 'default'
+          ? (file.startsWith('pos_backup_default_') || (!file.startsWith('pos_backup_') || !file.includes('_202')))
+          : file.startsWith(`pos_backup_${tenantId}_`);
+
+        if (isMatch) {
+          const filePath = path.join(this.backupDir, file);
+          try {
+            const stats = fs.statSync(filePath);
+            backups.push({
+              filename: file,
+              sizeBytes: stats.size,
+              sizeFormatted: this.formatBytes(stats.size),
+              createdAt: stats.mtime.toISOString(),
+            });
+          } catch {}
+        }
       }
     }
 
@@ -173,13 +190,16 @@ export class BackupService {
    */
   static async restoreBackup(filename: string): Promise<boolean> {
     const backupFilePath = this.getBackupFilePath(filename);
-    const liveDbPath = path.resolve(__dirname, '../../data/pos.db');
+    const tenantId = this.getCurrentTenantId();
+
+    const liveDbPath = tenantId === 'default'
+      ? path.resolve(__dirname, '../../data/pos.db')
+      : path.resolve(__dirname, `../../data/tenants/${tenantId}.db`);
 
     // 1. Create a safety snapshot before restoring
     await this.createBackup('pre_restore');
 
-    // 2. Perform restore safely by copying over
-    // In WAL mode, checkpoint first if possible
+    // 2. Perform restore safely by checkpointing and copying over
     try {
       db.pragma('wal_checkpoint(TRUNCATE)');
     } catch {}
@@ -194,7 +214,7 @@ export class BackupService {
   }
 
   /**
-   * Clean backups older than retention days
+   * Clean backups older than retention days for the current tenant
    */
   static async cleanOldBackups() {
     this.ensureDir();
@@ -203,7 +223,6 @@ export class BackupService {
     const now = Date.now();
 
     const backups = this.listBackups();
-    // Always keep at least the 3 most recent backups regardless of age
     if (backups.length <= 3) return;
 
     for (let i = 3; i < backups.length; i++) {
@@ -219,44 +238,54 @@ export class BackupService {
   }
 
   /**
-   * Background Auto-Backup Scheduled Runner
+   * Background Auto-Backup Scheduled Runner across all tenants
    */
   static startScheduler() {
     // Check every 15 minutes
     setInterval(async () => {
       try {
-        const settings = this.getSettings();
-        if (!settings.autoBackupEnabled) return;
+        const tenantIds = getAllTenantIds();
+        for (const tId of tenantIds) {
+          const tenantDb = getTenantDatabase(tId);
+          await tenantContext.run({ tenantId: tId, db: tenantDb }, async () => {
+            try {
+              const settings = this.getSettings();
+              if (!settings.autoBackupEnabled) return;
 
-        const now = Date.now();
-        const lastTime = settings.lastBackupAt ? new Date(settings.lastBackupAt).getTime() : 0;
-        
-        let intervalMs = 24 * 60 * 60 * 1000; // default daily
-        switch (settings.frequency) {
-          case 'hourly':
-            intervalMs = 60 * 60 * 1000;
-            break;
-          case 'every_6_hours':
-            intervalMs = 6 * 60 * 60 * 1000;
-            break;
-          case 'every_12_hours':
-            intervalMs = 12 * 60 * 60 * 1000;
-            break;
-          case 'daily':
-            intervalMs = 24 * 60 * 60 * 1000;
-            break;
-          case 'weekly':
-            intervalMs = 7 * 24 * 60 * 60 * 1000;
-            break;
-        }
+              const now = Date.now();
+              const lastTime = settings.lastBackupAt ? new Date(settings.lastBackupAt).getTime() : 0;
+              
+              let intervalMs = 24 * 60 * 60 * 1000; // default daily
+              switch (settings.frequency) {
+                case 'hourly':
+                  intervalMs = 60 * 60 * 1000;
+                  break;
+                case 'every_6_hours':
+                  intervalMs = 6 * 60 * 60 * 1000;
+                  break;
+                case 'every_12_hours':
+                  intervalMs = 12 * 60 * 60 * 1000;
+                  break;
+                case 'daily':
+                  intervalMs = 24 * 60 * 60 * 1000;
+                  break;
+                case 'weekly':
+                  intervalMs = 7 * 24 * 60 * 60 * 1000;
+                  break;
+              }
 
-        if (now - lastTime >= intervalMs) {
-          console.log(`[Auto-Backup] Menjalankan dynamic auto-backup berkala (${settings.frequency})...`);
-          await this.createBackup('auto');
-          console.log(`[Auto-Backup] Berhasil membuat snapshot database.`);
+              if (now - lastTime >= intervalMs) {
+                console.log(`[Auto-Backup] Menjalankan auto-backup untuk tenant ${tId} (${settings.frequency})...`);
+                await this.createBackup('auto');
+                console.log(`[Auto-Backup] Snapshot tenant ${tId} berhasil dibuat.`);
+              }
+            } catch (errTenant) {
+              console.error(`[Auto-Backup] Error backup tenant ${tId}:`, errTenant);
+            }
+          });
         }
       } catch (err) {
-        console.error('[Auto-Backup] Error menjalankan backup otomatis:', err);
+        console.error('[Auto-Backup] Error global scheduler:', err);
       }
     }, 15 * 60 * 1000); // 15 mins check
   }

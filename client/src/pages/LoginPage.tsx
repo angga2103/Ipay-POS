@@ -3,8 +3,10 @@ import { useAuth } from '../context/AuthContext';
 import { Store, Lock, User, KeyRound, Shield, AlertCircle, ArrowRight, Smartphone, Sparkles } from 'lucide-react';
 
 export const LoginPage: React.FC = () => {
-  const { login, loginWithPin } = useAuth();
+  const { login, loginWithPin, storeName, tenantId, setTenant } = useAuth();
   const [loginMode, setLoginMode] = useState<'pin' | 'password'>('pin');
+  const [showTenantModal, setShowTenantModal] = useState(false);
+  const [inputTenantId, setInputTenantId] = useState(tenantId === 'default' ? '' : tenantId);
 
   // Password mode state
   const [username, setUsername] = useState('');
@@ -103,6 +105,29 @@ export const LoginPage: React.FC = () => {
         <div className="grid grid-cols-1 md:grid-cols-12 gap-6 items-start max-w-4xl mx-auto w-full">
           {/* Left Column: Login Card (Cols 1-7) */}
           <div className="md:col-span-7 bg-slate-800/90 border border-slate-700/80 rounded-2xl shadow-2xl p-5 md:p-7 backdrop-blur-md">
+            {/* Store / Tenant Identifier */}
+            <div className="mb-4 px-3 py-2 rounded-xl bg-slate-900/80 border border-slate-700/80 flex items-center justify-between text-xs">
+              <div className="flex items-center gap-2 overflow-hidden">
+                <Store className="w-4 h-4 text-blue-400 shrink-0" />
+                <div className="truncate">
+                  <span className="text-slate-400">Toko Aktif: </span>
+                  <span className="font-bold text-white tracking-wide">{storeName}</span>
+                  {tenantId !== 'default' && (
+                    <span className="ml-1.5 px-1.5 py-0.2 bg-blue-500/20 text-blue-400 text-[10px] rounded font-mono border border-blue-500/30">
+                      {tenantId}
+                    </span>
+                  )}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => { setInputTenantId(tenantId === 'default' ? '' : tenantId); setShowTenantModal(true); }}
+                className="text-[11px] font-bold text-blue-400 hover:text-blue-300 ml-2 px-2 py-1 rounded bg-blue-500/10 hover:bg-blue-500/20 transition cursor-pointer shrink-0"
+              >
+                Ganti Toko
+              </button>
+            </div>
+
             {/* Mode Switcher Tabs */}
             <div className="flex bg-slate-900/80 p-1 rounded-xl border border-slate-700/60 mb-5">
               <button
@@ -363,6 +388,65 @@ export const LoginPage: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* Modal Ganti ID Toko / Merchant ID */}
+      {showTenantModal && (
+        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-slate-800 border border-slate-700 rounded-2xl max-w-md w-full p-6 shadow-2xl animate-scale-up">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-xl bg-blue-600/20 text-blue-400 flex items-center justify-center">
+                <Store className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-white">Ganti ID Toko / Konter</h3>
+                <p className="text-xs text-slate-400">Pilih atau masukkan Merchant ID toko Anda</p>
+              </div>
+            </div>
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1.5">
+                  ID Toko / Merchant ID (GarudaTel)
+                </label>
+                <input
+                  type="text"
+                  value={inputTenantId}
+                  onChange={e => setInputTenantId(e.target.value)}
+                  placeholder="Contoh: default atau MCH-XXXXXX"
+                  className="w-full px-3.5 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-white text-sm focus:outline-hidden focus:border-blue-500 font-mono"
+                />
+                <p className="text-[11px] text-slate-400 mt-1.5 leading-relaxed">
+                  Kosongkan atau ketik <code className="text-blue-400">default</code> untuk membuka toko utama/lokal. Masukkan Merchant ID Anda jika mengelola cabang khusus.
+                </p>
+              </div>
+
+              <div className="p-3 rounded-xl bg-blue-950/40 border border-blue-800/40 text-[11px] text-blue-300">
+                💡 <strong>Tips Mitra GarudaTel:</strong> Anda juga dapat membuka kasir ini secara otomatis dengan 1-klik langsung dari menu <em>Kasir Web POS</em> di Dashboard member GarudaTel tanpa perlu mengisi form ini.
+              </div>
+
+              <div className="flex items-center justify-end gap-2.5 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowTenantModal(false)}
+                  className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-400 hover:text-white hover:bg-slate-700/50 transition cursor-pointer"
+                >
+                  Batal
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTenant(inputTenantId.trim() || 'default');
+                    setShowTenantModal(false);
+                  }}
+                  className="px-5 py-2 rounded-xl text-xs font-bold bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white transition shadow-md shadow-blue-600/30 cursor-pointer"
+                >
+                  Terapkan Toko
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Footer */}
       <footer className="w-full text-center py-4 border-t border-slate-800 text-[11px] text-slate-500">

@@ -8,7 +8,7 @@ import {
 } from 'lucide-react';
 
 export const Header: React.FC = () => {
-  const { currentUser, users, switchUser, logout } = useAuth();
+  const { currentUser, users, switchUser, logout, storeName, tenantId } = useAuth();
   const { activeShift } = useShift();
   const { balance, lowBalanceAlert, mode, loading, refreshBalance } = usePPOB();
   const [time, setTime] = useState<string>('');
@@ -40,8 +40,13 @@ export const Header: React.FC = () => {
               Hybrid Minimarket
             </span>
           </div>
-          <p className="text-xs text-slate-500 font-medium truncate max-w-[200px]">
-            Toko Berkah Sejahtera
+          <p className="text-xs text-slate-600 font-semibold truncate max-w-[220px]" title={storeName}>
+            {storeName}
+            {tenantId !== 'default' && (
+              <span className="ml-1.5 px-1 py-0.2 text-[9px] font-mono bg-slate-200 text-slate-700 rounded">
+                {tenantId}
+              </span>
+            )}
           </p>
         </div>
       </div>

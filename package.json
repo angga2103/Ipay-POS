@@ -11,7 +11,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "seed": "tsx server/db/seed.ts",
-    "test": "tsx server/tests/run-tests.ts && tsx server/tests/test-konter-service.ts && tsx server/tests/test-customer-kasbon.ts && tsx server/tests/test-supplier-and-day1-sync.ts && tsx server/tests/test-backup-system.ts"
+    "test": "tsx server/tests/run-tests.ts && tsx server/tests/test-konter-service.ts && tsx server/tests/test-customer-kasbon.ts && tsx server/tests/test-supplier-and-day1-sync.ts && tsx server/tests/test-backup-system.ts && tsx server/tests/test-multitenant.ts"
   },
   "keywords": [
     "pos",
