@@ -17,6 +17,7 @@ import { ServicePage } from './pages/ServicePage';
 import { CustomerPage } from './pages/CustomerPage';
 import { SupplierPage } from './pages/SupplierPage';
 import { LoginPage } from './pages/LoginPage';
+import { ErrorBoundary } from './components/ErrorBoundary';
 
 const MainLayout: React.FC = () => {
   const { currentUser } = useAuth();
@@ -39,16 +40,18 @@ const MainLayout: React.FC = () => {
 
         {/* Active Page View */}
         <main className="flex-1 flex flex-col overflow-hidden relative">
-          {activeTab === 'pos' && <CashierPOS />}
-          {activeTab === 'services' && <ServicePage />}
-          {activeTab === 'customers' && <CustomerPage />}
-          {activeTab === 'suppliers' && <SupplierPage />}
-          {activeTab === 'inventory' && <InventoryPage />}
-          {activeTab === 'ppob' && <PPOBManagerPage />}
-          {activeTab === 'shift' && <ShiftManagementPage />}
-          {activeTab === 'accounting' && <AccountingPage />}
-          {activeTab === 'reports' && <ReportsPage />}
-          {activeTab === 'settings' && <SettingsPage />}
+          <ErrorBoundary>
+            {activeTab === 'pos' && <CashierPOS />}
+            {activeTab === 'services' && <ServicePage />}
+            {activeTab === 'customers' && <CustomerPage />}
+            {activeTab === 'suppliers' && <SupplierPage />}
+            {activeTab === 'inventory' && <InventoryPage />}
+            {activeTab === 'ppob' && <PPOBManagerPage />}
+            {activeTab === 'shift' && <ShiftManagementPage />}
+            {activeTab === 'accounting' && <AccountingPage />}
+            {activeTab === 'reports' && <ReportsPage />}
+            {activeTab === 'settings' && <SettingsPage />}
+          </ErrorBoundary>
         </main>
       </div>
 

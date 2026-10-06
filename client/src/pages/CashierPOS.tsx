@@ -367,10 +367,10 @@ export const CashierPOS: React.FC = () => {
 
                     <div className="mt-2 pt-2 border-t border-slate-100 flex items-center justify-between">
                       <span className="font-extrabold text-xs text-blue-600 font-mono">
-                        Rp {prod.selling_price.toLocaleString('id-ID')}
+                        Rp {(prod.selling_price ?? 0).toLocaleString('id-ID')}
                       </span>
                       <span className="text-[10px] text-slate-400 font-medium">
-                        {prod.stock_quantity} {prod.base_uom}
+                        {prod.stock_quantity ?? 0} {prod.base_uom || 'Pcs'}
                       </span>
                     </div>
                   </div>

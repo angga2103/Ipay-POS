@@ -30,10 +30,13 @@ export const ProductSearchModal: React.FC<ProductSearchModalProps> = ({ isOpen, 
     fetch(`/api/products/search?q=${encodeURIComponent(query)}`)
       .then(res => res.json())
       .then(data => {
-        setResults(data);
+        setResults(Array.isArray(data) ? data : []);
         setLoading(false);
       })
-      .catch(() => setLoading(false));
+      .catch(() => {
+        setResults([]);
+        setLoading(false);
+      });
   }, [isOpen, query]);
 
   if (!isOpen) return null;
@@ -105,7 +108,7 @@ export const ProductSearchModal: React.FC<ProductSearchModalProps> = ({ isOpen, 
                     <span>Stok: {prod.stock_quantity} {prod.base_uom}</span>
                   </div>
                   <div className="text-xs font-mono font-bold text-blue-700 mt-1">
-                    Rp {prod.selling_price.toLocaleString('id-ID')} / {prod.base_uom}
+                    Rp {(prod.selling_price ?? 0).toLocaleString('id-ID')} / {prod.base_uom || 'Pcs'}
                   </div>
                 </div>
 
@@ -116,7 +119,7 @@ export const ProductSearchModal: React.FC<ProductSearchModalProps> = ({ isOpen, 
                     className="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs flex items-center gap-1 shadow-xs cursor-pointer"
                   >
                     <Plus className="w-3.5 h-3.5" />
-                    <span>+ {prod.base_uom}</span>
+                    <span>+ {prod.base_uom || 'Pcs'}</span>
                   </button>
 
                   {/* Multi-UOM buttons if available */}
@@ -125,7 +128,7 @@ export const ProductSearchModal: React.FC<ProductSearchModalProps> = ({ isOpen, 
                       key={u.id}
                       onClick={() => handleSelect(prod, u.unit_name)}
                       className="px-2.5 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold text-xs border border-slate-300 cursor-pointer"
-                      title={`Jual 1 ${u.unit_name} (isi ${u.conversion_factor} ${prod.base_uom}) - Rp ${u.selling_price.toLocaleString('id-ID')}`}
+                      title={`Jual 1 ${u.unit_name} (isi ${u.conversion_factor} ${prod.base_uom || 'Pcs'}) - Rp ${(u.selling_price ?? 0).toLocaleString('id-ID')}`}
                     >
                       + {u.unit_name}
                     </button>

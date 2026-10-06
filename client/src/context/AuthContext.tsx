@@ -26,6 +26,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const [currentUser, setCurrentUser] = useState<User | null>(() => {
     const saved = localStorage.getItem('pos_user');
+    const activeTenant = localStorage.getItem('pos_tenant_id') || 'default';
+    const authToken = localStorage.getItem('pos_auth_token');
+
+    // If tenant requires auth token but token is missing, force re-login
+    if (activeTenant !== 'default' && !authToken) {
+      localStorage.removeItem('pos_user');
+      return null;
+    }
+
     if (!saved) return null;
     try {
       return JSON.parse(saved);

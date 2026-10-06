@@ -72,11 +72,15 @@ export const AccountingPage: React.FC = () => {
       ]);
 
       setPlData(dataPl);
-      setJournals(dataJournals);
-      setTrialBalance(dataTb);
-      setCoaList(dataCoa);
+      setJournals(Array.isArray(dataJournals) ? dataJournals : []);
+      setTrialBalance(dataTb?.accounts ? dataTb : null);
+      setCoaList(Array.isArray(dataCoa) ? dataCoa : []);
       setSyncStatus(dataSync);
-      setValuationData(dataVal);
+      if (dataVal && dataVal.summary) {
+        setValuationData(dataVal);
+      } else {
+        setValuationData(null);
+      }
       if (Array.isArray(dataSup)) {
         setSuppliersList(dataSup);
         const sMap: Record<number, string> = {};
@@ -924,14 +928,14 @@ export const AccountingPage: React.FC = () => {
                     <label className="font-bold text-slate-700">
                       5. Persediaan Fisik Toko (1-1005) Rp
                     </label>
-                    {valuationData?.summary.total_cost_value ? (
+                    {valuationData?.summary?.total_cost_value ? (
                       <button
                         type="button"
                         onClick={() => setOpeningForm(prev => ({ ...prev, inventory_value: String(valuationData.summary.total_cost_value) }))}
                         className="text-[10px] text-blue-600 font-bold hover:underline cursor-pointer"
                         title="Tarik nilai total modal HPP dari seluruh produk di katalog"
                       >
-                        ⚡ Tarik HPP Katalog (Rp {valuationData.summary.total_cost_value.toLocaleString('id-ID')})
+                        ⚡ Tarik HPP Katalog (Rp {(valuationData.summary.total_cost_value ?? 0).toLocaleString('id-ID')})
                       </button>
                     ) : null}
                   </div>

@@ -87,10 +87,19 @@ export const InventoryPage: React.FC = () => {
   const fetchValuation = async () => {
     try {
       const res = await fetch('/api/inventory/valuation');
+      if (!res.ok) {
+        setValuationData(null);
+        return;
+      }
       const data = await res.json();
-      setValuationData(data);
+      if (data && data.summary && typeof data.summary === 'object') {
+        setValuationData(data);
+      } else {
+        setValuationData(null);
+      }
     } catch (err) {
       console.error('Failed to load inventory valuation:', err);
+      setValuationData(null);
     }
   };
 
@@ -102,11 +111,14 @@ export const InventoryPage: React.FC = () => {
   }, []);
 
   // Filtered Products
-  const filteredProducts = products.filter(p => {
-    const matchesSearch = 
-      p.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      p.barcode.includes(searchQuery) ||
-      p.sku.toLowerCase().includes(searchQuery.toLowerCase());
+  const filteredProducts = (products || []).filter(p => {
+    if (!p) return false;
+    const name = (p.name || '').toLowerCase();
+    const barcode = (p.barcode || '').toLowerCase();
+    const sku = (p.sku || '').toLowerCase();
+    const q = (searchQuery || '').toLowerCase();
+
+    const matchesSearch = name.includes(q) || barcode.includes(q) || sku.includes(q);
 
     const matchesCategory = 
       selectedCategoryFilter === 'ALL' || 
@@ -409,7 +421,7 @@ export const InventoryPage: React.FC = () => {
       </div>
 
       {/* Total Inventory Valuation (Nilai Keseluruhan Produk) */}
-      {valuationData && (
+      {valuationData?.summary && (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5 md:gap-3">
           {/* Card 1: Total Modal Persediaan (HPP) */}
           <div className="bg-white p-3 rounded-2xl border border-blue-200 shadow-xs">
@@ -422,7 +434,7 @@ export const InventoryPage: React.FC = () => {
               </div>
             </div>
             <div className="text-base md:text-lg font-black font-mono text-blue-700 mt-0.5">
-              Rp {valuationData.summary.total_cost_value.toLocaleString('id-ID')}
+              Rp {(valuationData.summary.total_cost_value ?? 0).toLocaleString('id-ID')}
             </div>
             <p className="text-[10px] text-slate-400 mt-0.5 truncate">
               Total nominal aset modal barang
@@ -440,7 +452,7 @@ export const InventoryPage: React.FC = () => {
               </div>
             </div>
             <div className="text-base md:text-lg font-black font-mono text-indigo-700 mt-0.5">
-              Rp {valuationData.summary.total_retail_value.toLocaleString('id-ID')}
+              Rp {(valuationData.summary.total_retail_value ?? 0).toLocaleString('id-ID')}
             </div>
             <p className="text-[10px] text-slate-400 mt-0.5 truncate">
               Potensi omzet jika stok terjual habis
@@ -458,10 +470,10 @@ export const InventoryPage: React.FC = () => {
               </div>
             </div>
             <div className="text-base md:text-lg font-black font-mono text-emerald-600 mt-0.5">
-              Rp {valuationData.summary.potential_gross_profit.toLocaleString('id-ID')}
+              Rp {(valuationData.summary.potential_gross_profit ?? 0).toLocaleString('id-ID')}
             </div>
             <p className="text-[10px] text-emerald-700 font-bold mt-0.5 truncate">
-              Margin Proyeksi: ~{valuationData.summary.potential_margin_percent}%
+              Margin Proyeksi: ~{valuationData.summary.potential_margin_percent ?? 0}%
             </p>
           </div>
 
@@ -476,10 +488,10 @@ export const InventoryPage: React.FC = () => {
               </div>
             </div>
             <div className="text-base md:text-lg font-black font-mono text-slate-800 mt-0.5">
-              {valuationData.summary.total_units.toLocaleString('id-ID')} Unit
+              {(valuationData.summary.total_units ?? 0).toLocaleString('id-ID')} Unit
             </div>
             <p className="text-[10px] text-slate-400 mt-0.5 truncate">
-              {valuationData.summary.total_sku} SKU • {valuationData.summary.low_stock_count} item menipis
+              {valuationData.summary.total_sku ?? 0} SKU • {valuationData.summary.low_stock_count ?? 0} item menipis
             </p>
           </div>
         </div>
@@ -585,14 +597,14 @@ export const InventoryPage: React.FC = () => {
                               ? 'bg-rose-100 text-rose-800 animate-pulse'
                               : 'bg-emerald-100 text-emerald-800'
                           }`}>
-                            {p.stock_quantity} {p.base_uom}
+                            {p.stock_quantity ?? 0} {p.base_uom || 'Pcs'}
                           </span>
                         </td>
                         <td className="py-3 px-3 text-right font-mono text-slate-600">
-                          Rp {p.cost_price.toLocaleString('id-ID')}
+                          Rp {(p.cost_price ?? 0).toLocaleString('id-ID')}
                         </td>
                         <td className="py-3 px-3 text-right font-mono font-bold text-blue-700">
-                          Rp {p.selling_price.toLocaleString('id-ID')} / {p.base_uom}
+                          Rp {(p.selling_price ?? 0).toLocaleString('id-ID')} / {p.base_uom || 'Pcs'}
                         </td>
 
                         {/* Multi-UOM units */}
@@ -604,12 +616,12 @@ export const InventoryPage: React.FC = () => {
                                   key={u.id}
                                   className="px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 font-mono text-[10px] font-semibold border border-slate-200"
                                 >
-                                  1 {u.unit_name} = {u.conversion_factor} {p.base_uom} (Rp {u.selling_price.toLocaleString('id-ID')})
+                                  1 {u.unit_name} = {u.conversion_factor} {p.base_uom || 'Pcs'} (Rp {(u.selling_price ?? 0).toLocaleString('id-ID')})
                                 </span>
                               ))}
                             </div>
                           ) : (
-                            <span className="text-slate-400 font-mono text-[11px]">Hanya {p.base_uom}</span>
+                            <span className="text-slate-400 font-mono text-[11px]">Hanya {p.base_uom || 'Pcs'}</span>
                           )}
                         </td>
 
@@ -622,7 +634,7 @@ export const InventoryPage: React.FC = () => {
                                   key={idx}
                                   className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-900 font-mono text-[10px] font-semibold border border-amber-200"
                                 >
-                                  &ge;{t.min_qty} pcs: Rp {t.tier_price.toLocaleString('id-ID')}
+                                  &ge;{t.min_qty} pcs: Rp {(t.tier_price ?? 0).toLocaleString('id-ID')}
                                 </span>
                               ))}
                             </div>
@@ -699,7 +711,7 @@ export const InventoryPage: React.FC = () => {
                       <td className="py-3 px-3 font-mono text-slate-600">{b.batch_number}</td>
                       <td className="py-3 px-3 font-mono font-bold text-slate-800">{b.expiry_date}</td>
                       <td className="py-3 px-3 text-center font-mono font-bold">{b.current_qty} pcs</td>
-                      <td className="py-3 px-3 text-right font-mono">Rp {b.cost_price.toLocaleString('id-ID')}</td>
+                      <td className="py-3 px-3 text-right font-mono">Rp {(b.cost_price ?? 0).toLocaleString('id-ID')}</td>
                       <td className="py-3 px-3 text-center">
                         {diffDays <= 30 ? (
                           <span className="px-2 py-0.5 rounded-full bg-rose-100 text-rose-800 font-bold text-[10px] animate-pulse">
@@ -757,9 +769,9 @@ export const InventoryPage: React.FC = () => {
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {products.map(p => {
-                  const physical = opnameItems[p.id] !== undefined ? opnameItems[p.id] : p.stock_quantity;
-                  const variance = physical - p.stock_quantity;
-                  const varianceVal = variance * p.cost_price;
+                  const physical = opnameItems[p.id] !== undefined ? opnameItems[p.id] : (p.stock_quantity ?? 0);
+                  const variance = physical - (p.stock_quantity ?? 0);
+                  const varianceVal = variance * (p.cost_price ?? 0);
 
                   return (
                     <tr key={p.id} className="hover:bg-slate-50">
@@ -768,7 +780,7 @@ export const InventoryPage: React.FC = () => {
                         <div className="text-[10px] text-slate-400 font-mono">Barcode: {p.barcode}</div>
                       </td>
                       <td className="py-2 px-3 text-center font-mono font-bold">
-                        {p.stock_quantity} {p.base_uom}
+                        {p.stock_quantity ?? 0} {p.base_uom || 'Pcs'}
                       </td>
                       <td className="py-2 px-3">
                         <input
@@ -780,12 +792,12 @@ export const InventoryPage: React.FC = () => {
                       </td>
                       <td className="py-2 px-3 text-center font-mono font-bold">
                         <span className={variance < 0 ? 'text-rose-600' : variance > 0 ? 'text-emerald-600' : 'text-slate-400'}>
-                          {variance > 0 ? `+${variance}` : variance} {p.base_uom}
+                          {variance > 0 ? `+${variance}` : variance} {p.base_uom || 'Pcs'}
                         </span>
                       </td>
                       <td className="py-2 px-3 text-right font-mono font-bold">
                         <span className={varianceVal < 0 ? 'text-rose-600' : varianceVal > 0 ? 'text-emerald-600' : 'text-slate-400'}>
-                          Rp {varianceVal.toLocaleString('id-ID')}
+                          Rp {(varianceVal ?? 0).toLocaleString('id-ID')}
                         </span>
                       </td>
                     </tr>

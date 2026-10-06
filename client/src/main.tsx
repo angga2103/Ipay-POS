@@ -19,7 +19,18 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
   }
 
   modifiedInit.headers = headers;
-  return originalFetch(input, modifiedInit);
+  const res = await originalFetch(input, modifiedInit);
+
+  // If session expired or token is invalid on multi-tenant store, clear dead tokens
+  if (res.status === 401 && activeTenant !== 'default') {
+    const urlStr = typeof input === 'string' ? input : input instanceof URL ? input.href : (input as Request).url || '';
+    if (!urlStr.includes('/auth/login') && !urlStr.includes('/auth/sso-exchange')) {
+      localStorage.removeItem('pos_auth_token');
+      localStorage.removeItem('pos_user');
+    }
+  }
+
+  return res;
 };
 
 // Check for SSO incoming params from GarudaTel
