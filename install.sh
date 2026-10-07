@@ -277,8 +277,11 @@ if [ -n "$CF_TOKEN" ]; then
     fi
 
     echo -e "${BLUE}[*] Menginstal service cloudflared tunnel...${NC}"
-    cloudflared service install "$CF_TOKEN" || true
-    systemctl restart cloudflared || true
+    cloudflared service uninstall 2>/dev/null || true
+    cloudflared service install "$CF_TOKEN"
+    systemctl daemon-reload
+    systemctl restart cloudflared
+    systemctl enable cloudflared || true
     echo -e "${GREEN}[✔] Cloudflare Zero Trust Tunnel berhasil terhubung!${NC}"
     if [ -n "$DOMAIN_NAME" ]; then
         echo -e "    Pastikan di Cloudflare Dashboard Public Hostname diarahkan ke: ${CYAN}http://localhost:3001${NC}"
