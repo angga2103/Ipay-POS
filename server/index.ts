@@ -30,8 +30,9 @@ app.get('/health', (_req, res) => {
 const distPath = path.join(__dirname, '../dist');
 if (fs.existsSync(distPath)) {
   app.use(express.static(distPath));
-  app.get('*', (req, res, next) => {
-    if (req.path.startsWith('/api') || req.path === '/health') {
+  // SPA Fallback for HTML5 client-side routing (Express 5 compatible)
+  app.use((req, res, next) => {
+    if (req.method !== 'GET' || req.path.startsWith('/api') || req.path === '/health') {
       return next();
     }
     res.sendFile(path.join(distPath, 'index.html'));
