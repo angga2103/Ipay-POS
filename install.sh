@@ -102,6 +102,7 @@ apt-get update -y -q || true
 
 echo -e "${BLUE}[*] Memasang dependensi dasar sistem (curl, git, build-essential, sqlite3)...${NC}"
 apt-get install -y -q curl git build-essential sqlite3 cron ca-certificates gnupg
+mkdir -p /etc/apt/keyrings
 
 # Validasi kapabilitas compiler C++20 (wajib untuk Node 22 & modern better-sqlite3 bindings)
 echo -e "${BLUE}[*] Memeriksa kapabilitas compiler C++20...${NC}"
@@ -267,11 +268,13 @@ echo -e "${YELLOW}${BOLD}  TAHAP 8: CLOUDFLARE ZERO TRUST TUNNEL SETUP          
 echo -e "${YELLOW}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
 if [ -n "$CF_TOKEN" ]; then
-    echo -e "${BLUE}[*] Memasang cloudflared binary dari repository Cloudflare...${NC}"
-    curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg | gpg --dearmor -o /etc/apt/keyrings/cloudflare-main.gpg --yes
-    echo "deb [signed-by=/etc/apt/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared nodistro main" | tee /etc/apt/sources.list.d/cloudflared.list
-    apt-get update -y -q
-    apt-get install -y -q cloudflared
+    echo -e "${BLUE}[*] Memeriksa & memasang binary cloudflared...${NC}"
+    if ! command -v cloudflared >/dev/null 2>&1; then
+        echo -e "${BLUE}[*] Mengunduh paket resmi cloudflared (.deb)...${NC}"
+        curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o /tmp/cloudflared.deb
+        dpkg -i /tmp/cloudflared.deb || apt-get install -f -y -q
+        rm -f /tmp/cloudflared.deb
+    fi
 
     echo -e "${BLUE}[*] Menginstal service cloudflared tunnel...${NC}"
     cloudflared service install "$CF_TOKEN" || true
