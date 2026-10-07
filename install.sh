@@ -26,7 +26,7 @@ echo -e "${CYAN}${BOLD}"
 echo "  ╔══════════════════════════════════════════════════════════════╗"
 echo "  ║                                                              ║"
 echo "  ║          🛒 POS IPAY - ONE-CLICK VPS INSTALLER 🛒            ║"
-echo "  ║       Cloudflare Zero Trust + Node.js 20 LTS + SQLite WAL    ║"
+echo "  ║       Cloudflare Zero Trust + Node.js 22 LTS + SQLite WAL    ║"
 echo "  ║                                                              ║"
 echo "  ╚══════════════════════════════════════════════════════════════╝"
 echo -e "${NC}"
@@ -103,29 +103,45 @@ apt-get update -y -q || true
 echo -e "${BLUE}[*] Memasang dependensi dasar sistem (curl, git, build-essential, sqlite3)...${NC}"
 apt-get install -y -q curl git build-essential sqlite3 cron ca-certificates gnupg
 
-# 4. Instalasi Node.js 20 LTS (NodeSource)
+# Validasi kapabilitas compiler C++20 (wajib untuk Node 22 & modern better-sqlite3 bindings)
+echo -e "${BLUE}[*] Memeriksa kapabilitas compiler C++20...${NC}"
+if ! echo "int main(){}" | g++ -std=c++20 -x c++ - -o /dev/null >/dev/null 2>&1; then
+    echo -e "${YELLOW}[!] Compiler g++ bawaan OS belum mendukung C++20 (terdeteksi di Ubuntu 20.04).${NC}"
+    echo -e "${BLUE}[*] Memasang compiler modern (gcc-10 & g++-10)...${NC}"
+    apt-get install -y -q gcc-10 g++-10 || true
+    if command -v g++-10 >/dev/null 2>&1; then
+        update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-10 100 --slave /usr/bin/g++ g++ /usr/bin/g++-10 || true
+        update-alternatives --set gcc /usr/bin/gcc-10 || true
+        echo -e "${GREEN}[✔] Default compiler berhasil dialihkan ke GCC 10 (mendukung -std=c++20).${NC}"
+    fi
+else
+    echo -e "${GREEN}[✔] Compiler C++20 siap digunakan.${NC}"
+fi
+
+# 4. Instalasi Node.js 22 LTS (NodeSource)
 echo ""
 echo -e "${YELLOW}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${YELLOW}${BOLD}  TAHAP 3: SETUP RUNTIME NODE.JS 20 LTS & TSX ENGINE             ${NC}"
+echo -e "${YELLOW}${BOLD}  TAHAP 3: SETUP RUNTIME NODE.JS 22 LTS & TSX ENGINE             ${NC}"
 echo -e "${YELLOW}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
 NEED_NODE_INSTALL=0
 if command -v node >/dev/null 2>&1; then
     NODE_VER=$(node -v | cut -d'v' -f2 | cut -d'.' -f1)
-    if [ "$NODE_VER" -lt 18 ]; then
+    if [ "$NODE_VER" -lt 22 ]; then
+        echo -e "${YELLOW}[!] Versi Node.js terpasang (v$NODE_VER) di bawah standar minimum (v22). Memperbarui...${NC}"
         NEED_NODE_INSTALL=1
     else
-        echo -e "${GREEN}[✔] Node.js sudah terpasang: $(node -v)${NC}"
+        echo -e "${GREEN}[✔] Node.js sudah memenuhi syarat: $(node -v)${NC}"
     fi
 else
     NEED_NODE_INSTALL=1
 fi
 
 if [ "$NEED_NODE_INSTALL" -eq 1 ]; then
-    echo -e "${BLUE}[*] Memasang Node.js 20.x LTS dari NodeSource...${NC}"
+    echo -e "${BLUE}[*] Memasang Node.js 22.x LTS dari NodeSource...${NC}"
     mkdir -p /etc/apt/keyrings
     curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg --yes
-    echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main" | tee /etc/apt/sources.list.d/nodesource.list
+    echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" | tee /etc/apt/sources.list.d/nodesource.list
     apt-get update -y -q
     apt-get install -y -q nodejs
     echo -e "${GREEN}[✔] Berhasil memasang Node.js: $(node -v) & npm: $(npm -v)${NC}"
@@ -138,10 +154,26 @@ echo -e "${YELLOW}${BOLD}  TAHAP 4: BUILD PROYEK (NPM INSTALL & VITE BUILD)     
 echo -e "${YELLOW}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
 cd "$PROJECT_DIR"
-echo -e "${BLUE}[*] Memasang dependensi npm (termasuk SQLite native bindings)...${NC}"
+echo -e "${BLUE}[*] Memasang dependensi npm...${NC}"
 npm install
 
+# Self-healing test untuk better-sqlite3 native binding
+echo -e "${BLUE}[*] Memverifikasi integritas SQLite native binding...${NC}"
+if ! node -e "require('better-sqlite3')" >/dev/null 2>&1; then
+    echo -e "${YELLOW}[!] Terdeteksi ketidakcocokan GLIBC pada binary prebuild. Melakukan rebuild otomatis...${NC}"
+    rm -rf node_modules/better-sqlite3/prebuilds
+    npm rebuild better-sqlite3 --build-from-source
+    if ! node -e "require('better-sqlite3')" >/dev/null 2>&1; then
+        echo -e "${RED}[✗] Gagal memuat better-sqlite3 setelah kompilasi ulang. Harap periksa g++-10.${NC}"
+        exit 1
+    fi
+    echo -e "${GREEN}[✔] Native binding better-sqlite3 berhasil disesuaikan dengan OS host.${NC}"
+else
+    echo -e "${GREEN}[✔] SQLite native binding berfungsi optimal.${NC}"
+fi
+
 echo -e "${BLUE}[*] Mengompilasi frontend React 19 production bundle (Vite)...${NC}"
+export VITE_CONFIG_NATIVE_IGNORE_WARNING=true
 npm run build
 echo -e "${GREEN}[✔] Build frontend berhasil dikompilasi ke direktori dist/.${NC}"
 

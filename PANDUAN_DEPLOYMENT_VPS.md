@@ -59,9 +59,9 @@ Menghubungkan domain ke server kasir tanpa perlu membuka port firewall (Port 80/
 Skrip `install.sh` menjalankan 9 tahapan otomatis:
 1. **Pemeriksaan Hak Akses & Direktori FHS**: Memastikan script dijalankan dengan hak root di path `/var/www/pos-ipay`.
 2. **Pembersihan APT Lock**: Melepaskan lock APT otomatis jika VPS sedang menjalankan update background.
-3. **Instalasi Dependensi Sistem**: Memasang `curl`, `git`, `build-essential`, `sqlite3`, dan `cron`.
-4. **Instalasi Node.js 20 LTS**: Memasang runtime Node.js resmi dari repository NodeSource.
-5. **Kompilasi Frontend Production**: Menjalankan `npm install` dan mengompilasi bundel Vite React 19 ke folder `dist/`.
+3. **Instalasi Dependensi Sistem & Compiler C++20**: Memasang `curl`, `git`, `build-essential`, `sqlite3`, `cron`, serta auto-konfigurasi `g++-10` untuk dukungan C++20 jika OS lama seperti Ubuntu 20.04.
+4. **Instalasi Node.js 22 LTS**: Memasang runtime Node.js 22 resmi dari repository NodeSource.
+5. **Kompilasi Frontend & Self-Healing SQLite**: Menjalankan `npm install`, kompilasi otomatis `better-sqlite3` native jika terdeteksi perbedaan GLIBC, dan build Vite React 19 ke folder `dist/`.
 6. **Inisialisasi Database SQLite WAL**: Membuat database `data/pos.db` dengan WAL mode dan menjalankan initial seed.
 7. **Pendaftaran Systemd Service Daemon**: Membuat service `/etc/systemd/system/pos-ipay.service` dengan proteksi auto-restart saat crash atau server reboot.
 8. **Konfigurasi Auto-Backup Harian (Crontab)**: Menjadwalkan script `/var/www/pos-ipay/backup.sh` setiap jam 02:00 malam dengan rotasi 30 hari.
