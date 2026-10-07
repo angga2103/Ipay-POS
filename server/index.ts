@@ -1,3 +1,5 @@
+import path from 'path';
+import fs from 'fs';
 import express from 'express';
 import cors from 'cors';
 import { apiRouter } from './routes/api';
@@ -23,6 +25,18 @@ app.get('/health', (_req, res) => {
     tenantsCount: getAllTenantIds().length,
   });
 });
+
+// Serve frontend production build (SPA)
+const distPath = path.join(__dirname, '../dist');
+if (fs.existsSync(distPath)) {
+  app.use(express.static(distPath));
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/api') || req.path === '/health') {
+      return next();
+    }
+    res.sendFile(path.join(distPath, 'index.html'));
+  });
+}
 
 app.listen(PORT, () => {
   console.log(`===================================================`);
