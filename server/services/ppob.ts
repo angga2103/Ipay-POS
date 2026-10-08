@@ -736,10 +736,14 @@ export class PPOBService {
     message?: string;
   }> {
     const config = this.getConfig();
-    const amount = Number(params.amount);
-    if (!amount || amount < 10000) {
+    const baseAmount = Number(params.amount);
+    if (!baseAmount || baseAmount < 10000) {
       return { success: false, message: 'Nominal deposit minimal Rp 10.000' };
     }
+
+    // Generate kode unik 3 digit acak (100 - 999)
+    const uniqueCode = Math.floor(100 + Math.random() * 900);
+    const totalAmount = baseAmount + uniqueCode;
 
     try {
       const todayStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
@@ -766,17 +770,21 @@ export class PPOBService {
         `Halo Admin iPay, saya telah membuat tiket deposit saldo PPOB:\n\n` +
         `• *Merchant ID:* ${config.merchantId}\n` +
         `• *Ref ID:* ${refId}\n` +
-        `• *Nominal:* Rp ${amount.toLocaleString('id-ID')}\n` +
+        `• *Nominal Pokok:* Rp ${baseAmount.toLocaleString('id-ID')}\n` +
+        `• *Kode Unik (3 Angka):* ${uniqueCode}\n` +
+        `• *TOTAL TRANSFER:* Rp ${totalAmount.toLocaleString('id-ID')} (Wajib Sesuai)\n` +
         `• *Metode:* ${params.channel}\n` +
         `• *Tujuan:* ${targetAccount} (${targetName})\n` +
         `• *Catatan:* ${params.notes || '-'}\n\n` +
-        `Mohon verifikasi transfer dan setujui penambahan saldo akun iPay saya. Terima kasih!`
+        `Mohon verifikasi transfer dan setujui penambahan saldo akun iPay saya di panel admin. Terima kasih!`
       );
       const whatsappUrl = `https://wa.me/${waAdmin}?text=${waMsg}`;
 
       let apiData: any = {
         ref_id: refId,
-        amount,
+        amount: totalAmount,
+        base_amount: baseAmount,
+        unique_code: uniqueCode,
         channel: params.channel,
         target_account: targetAccount,
         target_name: targetName,
@@ -798,7 +806,9 @@ export class PPOBService {
             },
             body: JSON.stringify({
               merchant_id: config.merchantId,
-              amount,
+              amount: totalAmount,
+              base_amount: baseAmount,
+              unique_code: uniqueCode,
               channel: params.channel,
               ref_id: refId,
               notes: params.notes || `Deposit via Web POS IPAY (${config.merchantId})`,
@@ -812,7 +822,10 @@ export class PPOBService {
                 ...apiData,
                 ...json.data,
                 ref_id: json.data.ref_id || refId,
-                whatsapp_url: whatsappUrl,
+                amount: json.data.amount || totalAmount,
+                base_amount: json.data.base_amount || baseAmount,
+                unique_code: json.data.unique_code || uniqueCode,
+                whatsapp_url: json.data.wa_confirm_url || whatsappUrl,
               };
             }
           } else {
@@ -830,13 +843,16 @@ export class PPOBService {
           VALUES (?, ?, ?, ?, 'PENDING', ?, ?)
         `).run(
           apiData.ref_id,
-          amount,
+          totalAmount,
           params.channel,
           params.sourceAccount || '1-1001',
           JSON.stringify({
             target_account: targetAccount,
             target_name: targetName,
-            whatsapp_url: whatsappUrl,
+            whatsapp_url: apiData.whatsapp_url || whatsappUrl,
+            base_amount: baseAmount,
+            unique_code: uniqueCode,
+            total_amount: totalAmount,
           }),
           params.notes || null
         );
@@ -847,17 +863,92 @@ export class PPOBService {
       return {
         success: true,
         ref_id: apiData.ref_id,
-        amount,
+        amount: totalAmount,
+        base_amount: baseAmount,
+        unique_code: uniqueCode,
         channel: params.channel,
         target_account: targetAccount,
         target_name: targetName,
-        whatsapp_url: whatsappUrl,
+        whatsapp_url: apiData.whatsapp_url || whatsappUrl,
         data: apiData,
-        message: 'Tiket deposit berhasil dibuat (PENDING). Saldo akan resmi bertambah setelah transfer diverifikasi oleh admin ipay.my.id.',
+        message: `Tiket deposit berhasil dibuat (PENDING). Silakan transfer tepat Rp ${totalAmount.toLocaleString('id-ID')} (Kode Unik: ${uniqueCode}).`,
       };
     } catch (err: any) {
       console.error('[PPOB Deposit Error]', err);
       return { success: false, message: `Gagal memproses deposit: ${err.message}` };
+    }
+  }
+
+  /**
+   * Cek status tiket deposit spesifik ke server ipay.my.id dan sinkronkan ke database lokal
+   */
+  static async syncDepositTicketStatus(refId: string): Promise<{
+    success: boolean;
+    status: 'PENDING' | 'APPROVED' | 'REJECTED';
+    remoteStatus?: string;
+    message: string;
+    amount?: number;
+  }> {
+    const config = this.getConfig();
+    const dep = db.prepare('SELECT * FROM ppob_deposits WHERE ref_id = ?').get(refId) as any;
+    if (!dep) {
+      return { success: false, status: 'PENDING', message: `Tiket ${refId} tidak ditemukan di database POS` };
+    }
+
+    if (dep.status === 'APPROVED') {
+      return { success: true, status: 'APPROVED', message: `Tiket ${refId} sudah disetujui sebelumnya.` };
+    }
+
+    if (config.mode === 'sandbox') {
+      return { success: true, status: dep.status, message: `Status lokal (Sandbox): ${dep.status}` };
+    }
+
+    try {
+      const res = await fetch(`${config.baseUrl}/api/v1/profile/deposit/status/${encodeURIComponent(refId)}`, {
+        method: 'GET',
+        headers: {
+          'X-API-KEY': config.apiKey,
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) POS-IPAY/1.0',
+          'Accept': 'application/json',
+        },
+      });
+
+      if (!res.ok) {
+        return { success: false, status: dep.status, message: `Server iPay merespons status HTTP ${res.status}` };
+      }
+
+      const json = await res.json() as any;
+      const remoteData = json.data || {};
+      const remoteStat = String(remoteData.status || '').toUpperCase();
+
+      if (remoteStat === 'SUCCESS' || remoteStat === 'APPROVED' || remoteStat === 'PAID') {
+        // Otomatis approve tiket di POS jika server iPay telah menyetujuinya!
+        const approveRes = await this.approveDeposit(refId);
+        return {
+          success: true,
+          status: 'APPROVED',
+          remoteStatus: remoteStat,
+          amount: dep.amount,
+          message: approveRes.message || `Tiket ${refId} telah disetujui oleh admin iPay dan saldo POS berhasil diselaraskan.`,
+        };
+      } else if (remoteStat === 'FAILED' || remoteStat === 'REJECTED') {
+        this.rejectDeposit(refId, remoteData.sn || 'Ditolak oleh admin server iPay');
+        return {
+          success: true,
+          status: 'REJECTED',
+          remoteStatus: remoteStat,
+          message: `Tiket ${refId} ditolak oleh admin iPay.`,
+        };
+      }
+
+      return {
+        success: true,
+        status: 'PENDING',
+        remoteStatus: 'PENDING',
+        message: 'Tiket masih berstatus PENDING di server iPay (Menunggu verifikasi admin).',
+      };
+    } catch (err: any) {
+      return { success: false, status: dep.status, message: `Gagal menghubungi server iPay: ${err.message}` };
     }
   }
 

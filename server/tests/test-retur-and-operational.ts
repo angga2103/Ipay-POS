@@ -30,6 +30,8 @@ async function runReturAndOperationalTests() {
 
   assert(depReq.success === true, 'Deposit ticket creation must succeed');
   assert(depReq.data && depReq.data.ref_id, 'Deposit ticket must return ref_id');
+  assert(depReq.data.unique_code >= 100 && depReq.data.unique_code <= 999, 'Deposit ticket must include 3-digit unique code (100-999)');
+  assert(depReq.data.amount === depReq.data.base_amount + depReq.data.unique_code, 'Deposit total amount must equal base_amount + unique_code');
 
   const refId = depReq.data.ref_id;
 
@@ -53,11 +55,11 @@ async function runReturAndOperationalTests() {
   const approvedDeposit = db.prepare('SELECT * FROM ppob_deposits WHERE ref_id = ?').get(refId) as any;
   assert(approvedDeposit.status === 'APPROVED', 'Deposit status must now be APPROVED');
 
-  // Verify Balance in Account 1-1003 has now increased by exactly 150.000
+  // Verify Balance in Account 1-1003 has now increased by exactly approvedDeposit.amount (nominal + unique code)
   const depositBalanceAfterApprove = (db.prepare("SELECT balance FROM chart_of_accounts WHERE code = '1-1003'").get() as any).balance;
   assert(
-    depositBalanceAfterApprove - initialDepositBalance === 150000,
-    `Deposit balance must increase by Rp 150.000 after approval (got ${depositBalanceAfterApprove - initialDepositBalance})`
+    depositBalanceAfterApprove - initialDepositBalance === approvedDeposit.amount,
+    `Deposit balance must increase by approved amount (Rp ${approvedDeposit.amount}) after approval (got ${depositBalanceAfterApprove - initialDepositBalance})`
   );
 
   // --- Test 2: Operator RBAC & Switch User Authentication ---

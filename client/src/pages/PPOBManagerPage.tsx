@@ -155,6 +155,28 @@ export const PPOBManagerPage: React.FC = () => {
     }
   };
 
+  const [syncingDepositRefId, setSyncingDepositRefId] = useState<string | null>(null);
+
+  const handleSyncDepositStatus = async (refId: string) => {
+    setSyncingDepositRefId(refId);
+    try {
+      const res = await fetch(`/api/ppob/deposit/${encodeURIComponent(refId)}/sync-status`, { method: 'POST' });
+      const data = await res.json();
+      if (data.success) {
+        alert(`Status Tiket ${refId}: ${data.status}\n${data.message}`);
+        fetchDepositHistory();
+        fetchDepositInfo();
+        refreshBalance();
+      } else {
+        alert(`Gagal cek status deposit: ${data.message || 'Error'}`);
+      }
+    } catch (err: any) {
+      alert(`Terjadi kesalahan: ${err.message}`);
+    } finally {
+      setSyncingDepositRefId(null);
+    }
+  };
+
   const fetchDepositInfo = async () => {
     setLoadingDepositInfo(true);
     try {
@@ -983,9 +1005,14 @@ export const PPOBManagerPage: React.FC = () => {
 
                 {/* Custom Nominal Input */}
                 <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1">
-                    Nominal Transfer (Rp)
-                  </label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-xs font-bold text-slate-700">
+                      Nominal Pokok Deposit (Rp)
+                    </label>
+                    <span className="text-[10px] bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full font-bold">
+                      + 3 Angka Kode Unik Otomatis
+                    </span>
+                  </div>
                   <input
                     type="number"
                     min="10000"
@@ -996,9 +1023,14 @@ export const PPOBManagerPage: React.FC = () => {
                     className="w-full px-3 py-2.5 rounded-xl border border-slate-300 font-mono text-sm font-bold text-slate-900 focus:outline-blue-500"
                     required
                   />
-                  <span className="text-[11px] text-slate-500 mt-1 block">
-                    Terbilang: <span className="font-semibold text-slate-700">Rp {parseInt(depositAmount || '0').toLocaleString('id-ID')}</span>
-                  </span>
+                  <div className="mt-1.5 p-2 bg-slate-50 border border-slate-200 rounded-lg flex items-center justify-between text-[11px]">
+                    <span className="text-slate-600">
+                      Pokok: <b>Rp {parseInt(depositAmount || '0').toLocaleString('id-ID')}</b>
+                    </span>
+                    <span className="text-blue-700 font-semibold text-[10.5px]">
+                      Sistem akan menambahkan 3 angka acak (+XXX) untuk memudahkan verifikasi
+                    </span>
+                  </div>
                 </div>
 
                 {/* Channel Selector */}
@@ -1121,11 +1153,22 @@ export const PPOBManagerPage: React.FC = () => {
                       </div>
                     </div>
 
-                    <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl space-y-1 text-center">
-                      <span className="text-[11px] text-emerald-700 font-semibold uppercase">Nominal Ditransfer:</span>
-                      <div className="text-2xl font-black font-mono text-emerald-800">
+                    <div className="p-3.5 bg-linear-to-br from-emerald-50 to-teal-50 border-2 border-emerald-300 rounded-xl space-y-1.5 text-center">
+                      <span className="text-[11px] text-emerald-800 font-extrabold uppercase tracking-wider block">
+                        TOTAL NOMINAL TRANSFER (WAJIB TEPAT):
+                      </span>
+                      <div className="text-3xl font-black font-mono text-emerald-700">
                         Rp {depositTicket.amount?.toLocaleString('id-ID')}
                       </div>
+                      <div className="flex items-center justify-center gap-3 text-xs text-emerald-800 font-medium pt-1 border-t border-emerald-200/60">
+                        <span>Pokok: <b>Rp {(depositTicket.base_amount || depositTicket.amount - (depositTicket.unique_code || 0))?.toLocaleString('id-ID')}</b></span>
+                        <span className="bg-emerald-200 text-emerald-900 px-2 py-0.5 rounded-full font-bold font-mono text-[11px]">
+                          Kode Unik: +{depositTicket.unique_code || (depositTicket.amount % 1000)}
+                        </span>
+                      </div>
+                      <p className="text-[10.5px] text-emerald-700 italic mt-1">
+                        PENTING: Transfer tepat hingga 3 digit terakhir agar admin iPay dapat langsung mengenali mutasi Anda!
+                      </p>
                     </div>
 
                     <div className="p-3 bg-slate-50 rounded-xl space-y-1 text-xs">
@@ -1288,8 +1331,22 @@ export const PPOBManagerPage: React.FC = () => {
                         <td className="py-2.5 px-3 font-mono text-[11px] text-slate-600">
                           {dep.source_account}
                         </td>
-                        <td className="py-2.5 px-3 text-right font-mono font-black text-slate-900">
-                          Rp {dep.amount?.toLocaleString('id-ID')}
+                        <td className="py-2.5 px-3 text-right font-mono">
+                          <div className="font-black text-slate-900">
+                            Rp {dep.amount?.toLocaleString('id-ID')}
+                          </div>
+                          {(() => {
+                            let inst: any = null;
+                            try { inst = JSON.parse(dep.payment_instruction || '{}'); } catch {}
+                            if (inst?.unique_code) {
+                              return (
+                                <div className="text-[10px] text-amber-700 font-semibold font-sans">
+                                  Kode Unik: +{inst.unique_code}
+                                </div>
+                              );
+                            }
+                            return null;
+                          })()}
                         </td>
                         <td className="py-2.5 px-3 text-center">
                           <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
@@ -1308,7 +1365,17 @@ export const PPOBManagerPage: React.FC = () => {
                         {canDeposit && (
                           <td className="py-2.5 px-3 text-center">
                             {dep.status === 'PENDING' ? (
-                              <div className="flex items-center justify-center gap-1.5">
+                              <div className="flex items-center justify-center gap-1.5 flex-wrap">
+                                <button
+                                  type="button"
+                                  onClick={() => handleSyncDepositStatus(dep.ref_id)}
+                                  disabled={syncingDepositRefId === dep.ref_id}
+                                  className="px-2 py-1 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-lg font-bold text-[10px] transition cursor-pointer flex items-center gap-1"
+                                  title="Cek status verifikasi ke server ipay.my.id"
+                                >
+                                  <RefreshCw className={`w-3 h-3 ${syncingDepositRefId === dep.ref_id ? 'animate-spin' : ''}`} />
+                                  <span>Cek iPay</span>
+                                </button>
                                 <button
                                   type="button"
                                   onClick={() => handleApproveDeposit(dep.ref_id)}

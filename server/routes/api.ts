@@ -954,6 +954,16 @@ apiRouter.post('/ppob/deposit/:refId/reject', (req: Request, res: Response) => {
   }
 });
 
+apiRouter.post('/ppob/deposit/:refId/sync-status', async (req: Request, res: Response) => {
+  try {
+    const { refId } = req.params;
+    const result = await PPOBService.syncDepositTicketStatus(refId);
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 apiRouter.get('/ppob/transactions', async (_req: Request, res: Response) => {
   // Jalankan sync pending di background jika ada transaksi PENDING
   PPOBService.syncAllPendingTransactions().catch(() => {});
