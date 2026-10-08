@@ -216,7 +216,7 @@ export const PPOBManagerPage: React.FC = () => {
       });
       const data = await res.json();
       if (data.success) {
-        setDepositTicket(data);
+        setDepositTicket(data.data || data);
         fetchDepositInfo();
         fetchDepositHistory();
         // NOTE: Saldo TIDAK otomatis bertambah saat tiket dibuat. Menunggu persetujuan admin ipay.my.id!
@@ -1008,10 +1008,10 @@ export const PPOBManagerPage: React.FC = () => {
                   </label>
                   <div className="grid grid-cols-2 gap-2">
                     {[
-                      { id: 'DANA', name: 'DANA', sub: depositInfo?.deposit_channels?.dana_number || '081775700114' },
-                      { id: 'GOPAY', name: 'GoPay', sub: depositInfo?.deposit_channels?.gopay_number || '081775700114' },
-                      { id: 'SHOPEEPAY', name: 'ShopeePay', sub: depositInfo?.deposit_channels?.shopeepay_number || '081775700114' },
-                      { id: 'BANK_TRANSFER', name: 'Transfer Bank', sub: 'BCA / Mandiri / BRI' },
+                      { id: 'DANA', name: 'DANA', sub: '081775700114 (a.n Angga Dian Pratama Putra)' },
+                      { id: 'GOPAY', name: 'GoPay', sub: '081775700114 (a.n Angga Dian Pratama Putra)' },
+                      { id: 'SHOPEEPAY', name: 'ShopeePay', sub: '081775700114 (a.n Angga Dian Pratama Putra)' },
+                      { id: 'BANK_TRANSFER', name: 'Transfer Bank (BCA)', sub: '1234567890 (a.n PT GARUDATEL)' },
                     ].map(ch => (
                       <button
                         type="button"
@@ -1132,7 +1132,7 @@ export const PPOBManagerPage: React.FC = () => {
                       <span className="text-[11px] text-slate-500 font-semibold">Tujuan Pembayaran:</span>
                       <div className="font-bold text-slate-800">{depositTicket.target_account}</div>
                       <div className="text-[11px] text-slate-500">
-                        a.n <span className="font-semibold text-slate-700">GarudaTel / iPay</span>
+                        a.n <span className="font-semibold text-slate-700">{depositTicket.target_name || 'Angga Dian Pratama Putra (iPay / GarudaTel)'}</span>
                       </div>
                     </div>
 

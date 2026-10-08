@@ -684,12 +684,17 @@ export class PPOBService {
       if (res.ok) {
         const json = await res.json() as any;
         const liveBal = await this.getBalance();
+        const apiData = json.data || {};
+        const channelsList = apiData.channels || defaultChannels;
         return {
           success: true,
-          data: json.data || {},
-          live_balance: json.data?.balance ?? liveBal,
-          merchant_id: json.data?.merchant_id || config.merchantId,
-          deposit_channels: json.data?.deposit_channels || defaultChannels,
+          data: apiData,
+          live_balance: typeof apiData.balance === 'number' ? apiData.balance : liveBal,
+          merchant_id: apiData.merchant_id || config.merchantId,
+          wa_target: apiData.wa_target || '081775700114',
+          instructions: apiData.instructions || '',
+          channels: channelsList,
+          deposit_channels: channelsList,
         };
       }
     } catch (err: any) {
@@ -722,6 +727,12 @@ export class PPOBService {
   }): Promise<{
     success: boolean;
     data?: any;
+    ref_id?: string;
+    amount?: number;
+    channel?: string;
+    target_account?: string;
+    target_name?: string;
+    whatsapp_url?: string;
     message?: string;
   }> {
     const config = this.getConfig();
@@ -731,37 +742,85 @@ export class PPOBService {
     }
 
     try {
-      let apiData: any = null;
-      if (config.mode === 'live') {
-        const res = await fetch(`${config.baseUrl}/api/v1/profile/deposit/create`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-API-KEY': config.apiKey,
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) POS-IPAY/1.0',
-            'Accept': 'application/json',
-          },
-          body: JSON.stringify({
-            amount,
-            channel: params.channel,
-            notes: params.notes || `Deposit via Web POS IPAY (${config.merchantId})`,
-          }),
-        });
+      const todayStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+      const refId = `DEP-${todayStr}-${Date.now().toString().slice(-4)}`;
 
-        if (!res.ok) {
-          const errText = await res.text();
-          return { success: false, message: `Gagal menghubungi server ipay: ${errText}` };
+      // Tentukan rekening tujuan transfer dari channel yang dipilih (Akun Resmi iPay)
+      let targetAccount = 'DANA: 081775700114';
+      let targetName = 'Angga Dian Pratama Putra (iPay / GarudaTel)';
+      const chUpper = (params.channel || '').toUpperCase();
+      if (chUpper.includes('GO')) {
+        targetAccount = 'GoPay: 081775700114';
+      } else if (chUpper.includes('SHOPEE')) {
+        targetAccount = 'ShopeePay: 081775700114';
+      } else if (chUpper.includes('BANK') || chUpper.includes('BCA')) {
+        targetAccount = 'Bank BCA: 1234567890';
+        targetName = 'PT GARUDATEL NUSANTARA / iPay';
+      } else if (chUpper.includes('DANA')) {
+        targetAccount = 'DANA: 081775700114';
+      }
+
+      // Buat tautan WhatsApp otomatis untuk konfirmasi langsung ke nomor WhatsApp admin iPay
+      const waAdmin = '6281775700114';
+      const waMsg = encodeURIComponent(
+        `Halo Admin iPay, saya telah membuat tiket deposit saldo PPOB:\n\n` +
+        `• *Merchant ID:* ${config.merchantId}\n` +
+        `• *Ref ID:* ${refId}\n` +
+        `• *Nominal:* Rp ${amount.toLocaleString('id-ID')}\n` +
+        `• *Metode:* ${params.channel}\n` +
+        `• *Tujuan:* ${targetAccount} (${targetName})\n` +
+        `• *Catatan:* ${params.notes || '-'}\n\n` +
+        `Mohon verifikasi transfer dan setujui penambahan saldo akun iPay saya. Terima kasih!`
+      );
+      const whatsappUrl = `https://wa.me/${waAdmin}?text=${waMsg}`;
+
+      let apiData: any = {
+        ref_id: refId,
+        amount,
+        channel: params.channel,
+        target_account: targetAccount,
+        target_name: targetName,
+        whatsapp_url: whatsappUrl,
+        status: 'PENDING',
+        message: 'Tiket deposit berhasil dibuat. Silakan lakukan transfer dan konfirmasi ke admin iPay.',
+      };
+
+      // Jika dalam mode LIVE, coba beri tahu server gateway ipay.my.id
+      if (config.mode === 'live') {
+        try {
+          const res = await fetch(`${config.baseUrl}/api/v1/profile/deposit/create`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-API-KEY': config.apiKey,
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) POS-IPAY/1.0',
+              'Accept': 'application/json',
+            },
+            body: JSON.stringify({
+              merchant_id: config.merchantId,
+              amount,
+              channel: params.channel,
+              ref_id: refId,
+              notes: params.notes || `Deposit via Web POS IPAY (${config.merchantId})`,
+            }),
+          });
+
+          if (res.ok) {
+            const json = await res.json() as any;
+            if (json && json.data) {
+              apiData = {
+                ...apiData,
+                ...json.data,
+                ref_id: json.data.ref_id || refId,
+                whatsapp_url: whatsappUrl,
+              };
+            }
+          } else {
+            console.warn(`[PPOB Gateway] Remote create ticket returned status ${res.status}. Saving local ticket.`);
+          }
+        } catch (fetchErr: any) {
+          console.warn('[PPOB Gateway] Remote connection error:', fetchErr.message);
         }
-        const json = await res.json() as any;
-        apiData = json.data;
-      } else {
-        apiData = {
-          ref_id: `DEP-SANDBOX-${Date.now()}`,
-          amount,
-          channel: params.channel,
-          status: 'pending',
-          message: 'Mode Sandbox: Tiket simulasi deposit dibuat',
-        };
       }
 
       // Catat tiket deposit ke database lokal dengan status PENDING
@@ -774,7 +833,11 @@ export class PPOBService {
           amount,
           params.channel,
           params.sourceAccount || '1-1001',
-          typeof apiData === 'object' ? JSON.stringify(apiData) : String(apiData),
+          JSON.stringify({
+            target_account: targetAccount,
+            target_name: targetName,
+            whatsapp_url: whatsappUrl,
+          }),
           params.notes || null
         );
       } catch (dbErr) {
@@ -783,8 +846,14 @@ export class PPOBService {
 
       return {
         success: true,
+        ref_id: apiData.ref_id,
+        amount,
+        channel: params.channel,
+        target_account: targetAccount,
+        target_name: targetName,
+        whatsapp_url: whatsappUrl,
         data: apiData,
-        message: apiData.message || 'Tiket deposit berhasil dibuat (PENDING). Saldo akan otomatis bertambah setelah transfer diverifikasi oleh admin ipay.my.id.',
+        message: 'Tiket deposit berhasil dibuat (PENDING). Saldo akan resmi bertambah setelah transfer diverifikasi oleh admin ipay.my.id.',
       };
     } catch (err: any) {
       console.error('[PPOB Deposit Error]', err);
