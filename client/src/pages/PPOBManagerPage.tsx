@@ -1283,7 +1283,7 @@ export const PPOBManagerPage: React.FC = () => {
                           {dep.ref_id}
                         </td>
                         <td className="py-2.5 px-3 font-semibold text-slate-800">
-                          {dep.payment_channel}
+                          {dep.channel || dep.payment_channel || '-'}
                         </td>
                         <td className="py-2.5 px-3 font-mono text-[11px] text-slate-600">
                           {dep.source_account}
