@@ -22,9 +22,9 @@ export const PPOBProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const res = await fetch('/api/ppob/balance');
       if (res.ok) {
         const data = await res.json();
-        setBalance(data.balance);
-        setLowBalanceAlert(data.lowBalanceAlert);
-        setMode(data.mode);
+        setBalance(typeof data?.balance === 'number' ? data.balance : 0);
+        setLowBalanceAlert(Boolean(data?.lowBalanceAlert));
+        setMode(data?.mode || 'sandbox');
       }
     } catch (err) {
       console.error('Failed to fetch PPOB balance:', err);

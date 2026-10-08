@@ -215,9 +215,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       });
       if (res.ok) {
         const data = await res.json();
-        setCurrentUser(data.user);
         localStorage.setItem('pos_user', JSON.stringify(data.user));
         if (data.token) localStorage.setItem('pos_auth_token', data.token);
+        setCurrentUser(data.user);
         return true;
       }
       return false;
@@ -235,9 +235,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       });
       if (res.ok) {
         const data = await res.json();
-        setCurrentUser(data.user);
         localStorage.setItem('pos_user', JSON.stringify(data.user));
         if (data.token) localStorage.setItem('pos_auth_token', data.token);
+        setCurrentUser(data.user);
         return true;
       }
       return false;
@@ -471,12 +471,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         return { success: false, error: data.error || 'PIN Keamanan Toko salah' };
       }
 
-      setCurrentUser(data.user);
+      // Pastikan data sesi tersimpan di localStorage sebelum pemicu re-render
+      localStorage.setItem('pos_tenant_id', data.tenantId);
+      if (data.token) localStorage.setItem('pos_auth_token', data.token);
+      localStorage.setItem('pos_user', JSON.stringify(data.user));
+
       setTenantIdState(data.tenantId);
       if (data.storeName) setStoreName(data.storeName);
-      localStorage.setItem('pos_tenant_id', data.tenantId);
-      localStorage.setItem('pos_user', JSON.stringify(data.user));
-      if (data.token) localStorage.setItem('pos_auth_token', data.token);
+      setCurrentUser(data.user);
 
       return { success: true, user: data.user, storeName: data.storeName };
     } catch (err: any) {

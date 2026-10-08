@@ -94,7 +94,7 @@ export const Header: React.FC = () => {
               {/* Amount display */}
               <div className="flex items-center gap-1 sm:gap-2">
                 <span className="text-xs sm:text-sm font-bold font-mono tracking-tight text-slate-900 whitespace-nowrap">
-                  Rp {balance.toLocaleString('id-ID')}
+                  Rp {(typeof balance === 'number' ? balance : 0).toLocaleString('id-ID')}
                 </span>
                 <button
                   onClick={refreshBalance}
@@ -110,13 +110,15 @@ export const Header: React.FC = () => {
 
           {/* Shift Badge (Desktop / Tablet only) */}
           <div className="hidden lg:flex items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-100 border border-slate-200 text-xs">
-            <div className={`w-2 h-2 rounded-full ${activeShift ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'}`} />
+            <div className={`w-2 h-2 rounded-full ${activeShift && activeShift.id ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'}`} />
             <div>
               <span className="font-semibold text-slate-800">
-                {activeShift ? `Shift: ${activeShift.shift_number}` : 'Shift Belum Dibuka'}
+                {activeShift && activeShift.shift_number ? `Shift: ${activeShift.shift_number}` : 'Shift Belum Dibuka'}
               </span>
               <div className="text-[10px] text-slate-500">
-                {activeShift ? `Modal: Rp ${activeShift.opening_cash.toLocaleString('id-ID')}` : 'Buka Shift Terlebih Dahulu'}
+                {activeShift && typeof activeShift.opening_cash === 'number'
+                  ? `Modal: Rp ${activeShift.opening_cash.toLocaleString('id-ID')}`
+                  : 'Buka Shift Terlebih Dahulu'}
               </div>
             </div>
           </div>
@@ -160,7 +162,7 @@ export const Header: React.FC = () => {
                   <span className="text-[9px] bg-slate-100 px-1.5 py-0.5 rounded text-slate-500">PIN Terproteksi</span>
                 </div>
                 <div className="max-h-60 overflow-y-auto py-1">
-                  {users.map(u => (
+                  {Array.isArray(users) && users.map(u => (
                     <button
                       key={u.id}
                       onClick={() => handleSelectUserToSwitch(u)}

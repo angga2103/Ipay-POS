@@ -45,7 +45,7 @@ export class AccountingService {
       throw new Error(`Double-entry unbalanced! Total Debit (${roundedDebit}) != Total Credit (${roundedCredit})`);
     }
 
-    const entryNo = `JRN/${new Date().toISOString().slice(0, 10).replace(/-/g, '')}/${Date.now().toString().slice(-6)}`;
+    const entryNo = `JRN/${new Date().toISOString().slice(0, 10).replace(/-/g, '')}/${Date.now().toString().slice(-6)}-${Math.floor(1000 + Math.random() * 9000)}`;
 
     const transaction = db.transaction(() => {
       // 1. Insert header

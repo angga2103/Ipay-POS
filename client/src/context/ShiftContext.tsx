@@ -22,10 +22,19 @@ export const ShiftProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     try {
       const url = currentUser ? `/api/shifts/active?cashierId=${currentUser.id}` : '/api/shifts/active';
       const res = await fetch(url);
-      const data = await res.json();
-      setActiveShift(data);
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.id && typeof data.shift_number === 'string') {
+          setActiveShift(data);
+        } else {
+          setActiveShift(null);
+        }
+      } else {
+        setActiveShift(null);
+      }
     } catch (err) {
       console.error('Failed to load active shift:', err);
+      setActiveShift(null);
     } finally {
       setLoading(false);
     }

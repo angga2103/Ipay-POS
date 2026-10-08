@@ -69,12 +69,12 @@ export class ErrorBoundary extends Component<Props, State> {
             </button>
           </div>
 
-          {process.env.NODE_ENV !== 'production' && this.state.error && (
+          {this.state.error && (
             <details className="mt-6 text-left max-w-xl w-full bg-slate-100 p-3 rounded-xl border border-slate-200 text-[11px] font-mono text-rose-700 overflow-x-auto">
               <summary className="cursor-pointer font-bold text-slate-700 mb-1">
-                Detail Error Teknis
+                Detail Error Teknis ({this.state.error.name || 'Error'})
               </summary>
-              <div className="whitespace-pre-wrap">{this.state.error.toString()}</div>
+              <div className="whitespace-pre-wrap">{this.state.error.message || this.state.error.toString()}</div>
             </details>
           )}
         </div>

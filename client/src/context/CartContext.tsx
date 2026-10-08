@@ -50,10 +50,13 @@ export const CartProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const res = await fetch('/api/held-bills');
       if (res.ok) {
         const data = await res.json();
-        setHeldBills(data);
+        setHeldBills(Array.isArray(data) ? data : []);
+      } else {
+        setHeldBills([]);
       }
     } catch (err) {
       console.error('Failed to load held bills:', err);
+      setHeldBills([]);
     }
   };
 

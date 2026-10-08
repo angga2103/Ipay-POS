@@ -137,14 +137,16 @@ export const LoginPage: React.FC = () => {
     setPinLoading(true);
 
     const res = await loginVerifyPin(tempSessionToken, pinCode.trim());
-    setPinLoading(false);
 
     if (!res.success) {
+      setPinLoading(false);
       setPinModalError(res.error || '6-Digit PIN Keamanan Toko salah');
       return;
     }
 
     setShowPinModal(false);
+    // Masuk bersih ke aplikasi kasir POS tanpa residu state login
+    window.location.href = '/';
   };
 
   // Handle Register: Direct Self-Registration with Password and 6-Digit PIN
