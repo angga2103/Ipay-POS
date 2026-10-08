@@ -5,6 +5,7 @@
   "main": "server/index.ts",
   "type": "commonjs",
   "scripts": {
+    "start": "tsx server/index.ts",
     "dev": "concurrently -n \"SERVER,CLIENT\" -c \"blue,green\" \"npm run dev:server\" \"npm run dev:client\"",
     "dev:server": "tsx watch server/index.ts",
     "dev:client": "vite",
