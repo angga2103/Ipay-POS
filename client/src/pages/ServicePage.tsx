@@ -72,20 +72,27 @@ export const ServicePage: React.FC = () => {
     const dp = service.down_payment || 0;
     const remaining = Math.max(0, cost - dp);
 
-    let msg = `Halo Kak *${service.customer_name}*,\n\n`;
-    msg += `Kabar baik dari *POS IPAY / GarudaTel*! Unit perbaikan gadget Anda telah selesai dikerjakan dan *SIAP DIAMBIL*:\n\n`;
-    msg += `🔖 *No. Servis*   : ${service.service_no}\n`;
-    msg += `📱 *Unit*         : ${service.device_brand_model}\n`;
-    msg += `🔧 *Kerusakan*    : ${service.issue_description}\n`;
+    let msg = `*PEMBERITAHUAN SERVIS SELESAI*\n`;
+    msg += `*POS IPAY / GARUDATEL*\n`;
+    msg += `─────────────────────────\n\n`;
+    msg += `Halo Kak *${service.customer_name}*,\n`;
+    msg += `Kabar baik! Unit gadget Anda telah selesai dikerjakan dan *SIAP DIAMBIL*:\n\n`;
+    msg += `📋 *INFORMASI SERVIS*\n`;
+    msg += `• *No. Servis:* ${service.service_no}\n`;
+    msg += `• *Unit:* ${service.device_brand_model}\n`;
+    msg += `• *Kerusakan:* ${service.issue_description}\n`;
     if (service.technician_notes) {
-      msg += `📝 *Tindakan*     : ${service.technician_notes}\n`;
+      msg += `• *Tindakan:* ${service.technician_notes}\n`;
     }
-    msg += `💰 *Total Biaya*  : Rp ${cost.toLocaleString('id-ID')}\n`;
+    msg += `\n💰 *RINCIAN BIAYA*\n`;
+    msg += `• *Total Biaya:* Rp ${cost.toLocaleString('id-ID')}\n`;
     if (dp > 0) {
-      msg += `💵 *DP Terbayar*  : Rp ${dp.toLocaleString('id-ID')}\n`;
+      msg += `• *DP Terbayar:* Rp ${dp.toLocaleString('id-ID')}\n`;
     }
-    msg += `💳 *Sisa Bayar*   : *Rp ${remaining.toLocaleString('id-ID')}*\n\n`;
-    msg += `Silakan datang ke toko untuk pengambilan unit dengan membawa tanda terima servis. Terima kasih! 🙏✨`;
+    msg += `• *Sisa Pelunasan:* *Rp ${remaining.toLocaleString('id-ID')}*\n\n`;
+    msg += `📍 *Pengambilan Unit:*\n`;
+    msg += `Silakan datang ke toko dengan menunjukkan nomor atau tanda terima servis ini.\n\n`;
+    msg += `Terima kasih banyak atas kepercayaannya! 🙏`;
     return msg;
   };
 

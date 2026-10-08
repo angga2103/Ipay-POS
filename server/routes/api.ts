@@ -389,9 +389,38 @@ apiRouter.get('/shifts/active', (req: Request, res: Response) => {
 
 apiRouter.post('/shifts/open', (req: Request, res: Response) => {
   try {
-    const { cashierId, openingCash } = req.body;
+    const { cashierId, openingCash, pin } = req.body;
+    if (!cashierId) {
+      return res.status(400).json({ error: 'Operator kasir wajib dipilih' });
+    }
+
+    const user = db.prepare('SELECT id, username, name, role, pin, is_active FROM users WHERE id = ?').get(cashierId) as any;
+    if (!user) {
+      return res.status(404).json({ error: 'Operator tidak ditemukan' });
+    }
+    if (user.is_active === 0) {
+      return res.status(403).json({ error: 'Akun operator ini sedang dinonaktifkan oleh Administrator' });
+    }
+
+    // Verifikasi PIN operator
+    if (!pin) {
+      return res.status(400).json({ error: 'PIN operator wajib dimasukkan untuk membuka sesi shift' });
+    }
+    const isPinValid = user.pin ? verifySecret(String(pin).trim(), user.pin) : false;
+    if (!isPinValid) {
+      return res.status(401).json({ error: 'PIN operator salah! Silakan periksa kembali 6-digit PIN akun Anda.' });
+    }
+
     const shift = ShiftService.openShift(cashierId, parseFloat(openingCash) || 0);
-    res.json(shift);
+
+    const tenantId = req.tenantId || 'default';
+    const token = createAuthToken({ tenantId, userId: user.id, username: user.username, role: user.role });
+
+    res.json({
+      ...shift,
+      user: { id: user.id, username: user.username, name: user.name, role: user.role },
+      token,
+    });
   } catch (err: any) {
     res.status(400).json({ error: err.message });
   }
@@ -1358,7 +1387,14 @@ apiRouter.post('/returns', (req: Request, res: Response) => {
     const todayStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
     const countToday = (db.prepare("SELECT COUNT(*) as c FROM sales_returns WHERE return_no LIKE ?").get(`RET-${todayStr}-%`) as any).c;
     const returnNo = `RET-${todayStr}-${String(countToday + 1).padStart(3, '0')}`;
-    const cleanRefundMethod = refund_method === 'KASBON_REDUCTION' ? 'KASBON_REDUCTION' : 'CASH';
+    
+    // Deteksi metode refund: jika dipilih KASBON_REDUCTION / STORE_CREDIT / KASBON, atau jika transaksi awal KASBON dan bukan tunai
+    const isKasbonRefund = ['KASBON_REDUCTION', 'STORE_CREDIT', 'KASBON'].includes(refund_method) || (order.payment_method === 'KASBON' && refund_method !== 'CASH');
+    const cleanRefundMethod = isKasbonRefund ? 'KASBON_REDUCTION' : 'CASH';
+
+    let prevDebt = 0;
+    let newDebt = 0;
+    let custName = order.customer_name || '';
 
     db.transaction(() => {
       // 1. Insert sales_returns
@@ -1407,10 +1443,10 @@ apiRouter.post('/returns', (req: Request, res: Response) => {
         }
       }
 
-      // 3. Double-entry Journal Entry for Return
+      // 3. Double-entry Journal Entry for Return (Debit 4-1001 Pendapatan Penjualan Ritel)
       const lines: any[] = [];
       lines.push({
-        account_code: '4-1004',
+        account_code: '4-1001',
         debit: totalRefund,
         credit: 0,
         memo: `Retur penjualan ${returnNo} (Faktur ${order.invoice_no})`,
@@ -1432,6 +1468,7 @@ apiRouter.post('/returns', (req: Request, res: Response) => {
           });
         }
       } else {
+        // Pemotongan Piutang Usaha Kasbon (Akun 1-1004)
         lines.push({
           account_code: '1-1004',
           debit: 0,
@@ -1440,7 +1477,13 @@ apiRouter.post('/returns', (req: Request, res: Response) => {
         });
 
         if (order.customer_id) {
-          db.prepare('UPDATE customers SET current_debt = MAX(0, current_debt - ?) WHERE id = ?').run(totalRefund, order.customer_id);
+          const cust = db.prepare('SELECT id, name, current_debt FROM customers WHERE id = ?').get(order.customer_id) as any;
+          if (cust) {
+            custName = cust.name;
+            prevDebt = cust.current_debt || 0;
+            newDebt = Math.max(0, prevDebt - totalRefund);
+            db.prepare('UPDATE customers SET current_debt = ? WHERE id = ?').run(newDebt, order.customer_id);
+          }
         }
       }
 
@@ -1467,6 +1510,12 @@ apiRouter.post('/returns', (req: Request, res: Response) => {
       });
     })();
 
+    const successMessage = cleanRefundMethod === 'KASBON_REDUCTION'
+      ? (custName
+        ? `Retur penjualan ${returnNo} BERHASIL! Hutang kasbon pelanggan ${custName} berkurang Rp ${totalRefund.toLocaleString('id-ID')} (Sisa hutang: Rp ${newDebt.toLocaleString('id-ID')}).`
+        : `Retur penjualan ${returnNo} BERHASIL! Potong saldo kasbon sebesar Rp ${totalRefund.toLocaleString('id-ID')}.`)
+      : `Retur penjualan ${returnNo} BERHASIL! Pengembalian dana tunai Rp ${totalRefund.toLocaleString('id-ID')} dicatat ke kas laci.`;
+
     const returnReceiptText = ThermalPrinterService.formatReturnReceiptText({
       return_no: returnNo,
       invoice_no: order.invoice_no,
@@ -1483,8 +1532,12 @@ apiRouter.post('/returns', (req: Request, res: Response) => {
       success: true,
       return_no: returnNo,
       total_refund: totalRefund,
+      refund_method: cleanRefundMethod,
+      customer_name: custName,
+      previous_debt: prevDebt,
+      remaining_debt: newDebt,
       receiptText: returnReceiptText,
-      message: `Retur penjualan ${returnNo} berhasil diproses.`,
+      message: successMessage,
     });
   } catch (err: any) {
     console.error('Sales return error:', err);

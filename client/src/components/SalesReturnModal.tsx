@@ -26,17 +26,36 @@ export const SalesReturnModal: React.FC<SalesReturnModalProps> = ({
   const [restockMap, setRestockMap] = useState<Record<number, boolean>>({});
   const [reason, setReason] = useState('Barang Cacat / Rusak');
   const [customReason, setCustomReason] = useState('');
-  const [refundMethod, setRefundMethod] = useState<'CASH' | 'STORE_CREDIT'>('CASH');
+  const [refundMethod, setRefundMethod] = useState<'CASH' | 'KASBON_REDUCTION'>(
+    order?.payment_method === 'KASBON' ? 'KASBON_REDUCTION' : 'CASH'
+  );
+  const [customerData, setCustomerData] = useState<any>(null);
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
+  const [successResult, setSuccessResult] = useState<any>(null);
 
-  // Fetch complete order items & existing returns when modal opens
+  // Fetch complete order items, existing returns, and customer debt info when modal opens
   useEffect(() => {
     if (isOpen && order?.id) {
       setLoadingItems(true);
       setErrorMsg('');
+      setSuccessResult(null);
       setReturnQtys({});
       setRestockMap({});
+      setRefundMethod(order?.payment_method === 'KASBON' ? 'KASBON_REDUCTION' : 'CASH');
+
+      // Fetch customer detail if order has customer_id
+      if (order.customer_id) {
+        fetch('/api/customers')
+          .then(res => res.json())
+          .then(custs => {
+            if (Array.isArray(custs)) {
+              const found = custs.find((c: any) => c.id === order.customer_id);
+              if (found) setCustomerData(found);
+            }
+          })
+          .catch(() => {});
+      }
 
       Promise.all([
         fetch(`/api/orders/${order.id}`).then(res => res.json()),
@@ -241,10 +260,10 @@ export const SalesReturnModal: React.FC<SalesReturnModalProps> = ({
                 </button>
                 <button
                   type="button"
-                  onClick={() => setRefundMethod('STORE_CREDIT')}
+                  onClick={() => setRefundMethod('KASBON_REDUCTION')}
                   className={`py-2 px-2.5 rounded-xl text-xs font-bold border transition text-center cursor-pointer ${
-                    refundMethod === 'STORE_CREDIT'
-                      ? 'bg-blue-50 border-blue-400 text-blue-800 shadow-2xs'
+                    refundMethod === 'KASBON_REDUCTION'
+                      ? 'bg-blue-50 border-blue-500 text-blue-800 shadow-2xs'
                       : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-100'
                   }`}
                 >
@@ -252,10 +271,34 @@ export const SalesReturnModal: React.FC<SalesReturnModalProps> = ({
                 </button>
               </div>
               <span className="text-[10px] text-slate-400 block mt-1">
-                {refundMethod === 'CASH' ? 'Uang diambil dari kas laci kasir saat ini.' : 'Saldo piutang / kasbon pelanggan akan dikurangi.'}
+                {refundMethod === 'CASH' ? 'Uang diambil dari kas laci kasir saat ini.' : 'Saldo piutang / hutang kasbon pelanggan akan dikurangi.'}
               </span>
             </div>
           </div>
+
+          {/* Customer & Kasbon Context Banner */}
+          {(order.payment_method === 'KASBON' || customerData) && (
+            <div className="p-3.5 bg-blue-50/70 border border-blue-200 rounded-xl space-y-1.5 text-xs text-blue-900 animate-in fade-in">
+              <div className="flex items-center justify-between font-bold">
+                <span className="flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-blue-600" />
+                  <span>Pelanggan: {customerData?.name || order.customer_name || 'Pelanggan Terdaftar'}</span>
+                </span>
+                <span className="font-mono bg-blue-100 text-blue-900 px-2.5 py-0.5 rounded-lg text-xs font-black">
+                  Hutang Aktif: Rp {Number(customerData?.current_debt || 0).toLocaleString('id-ID')}
+                </span>
+              </div>
+              {refundMethod === 'KASBON_REDUCTION' ? (
+                <div className="text-[11px] text-blue-800 bg-white/70 p-2 rounded-lg border border-blue-100 leading-relaxed">
+                  💡 <strong>Simulasi Potong Hutang:</strong> Nilai retur <span className="font-bold font-mono">Rp {totalRefund.toLocaleString('id-ID')}</span> akan memotong hutang pelanggan sehingga sisa hutang menjadi <span className="font-bold font-mono text-emerald-700">Rp {Math.max(0, (customerData?.current_debt || 0) - totalRefund).toLocaleString('id-ID')}</span>.
+                </div>
+              ) : (
+                <div className="text-[11px] text-amber-900 bg-amber-50 p-2.5 rounded-lg border border-amber-300 leading-relaxed">
+                  ⚠️ <strong>Perhatian:</strong> Transaksi awal dibeli via <span className="font-bold font-mono">KASBON</span>. Jika memilih "Tunai", uang kas laci akan keluar ke pembeli, namun hutang kasbon pembeli <strong>TIDAK AKAN BERKURANG</strong>. Disarankan memilih opsi <strong>"Potong Kasbon"</strong>.
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Items Table */}
           <div className="space-y-2">

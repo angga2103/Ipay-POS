@@ -8,17 +8,29 @@ import { useAuth } from '../context/AuthContext';
 
 export const ShiftManagementPage: React.FC = () => {
   const { activeShift, openShift, closeShift, refreshShift } = useShift();
-  const { currentUser } = useAuth();
+  const { currentUser, users } = useAuth();
 
   const [openingCashInput, setOpeningCashInput] = useState<number>(200000);
   const [actualCashInput, setActualCashInput] = useState<number>(0);
   const [closingNotes, setClosingNotes] = useState<string>('');
+
+  // Open Shift Form State
+  const [selectedCashierId, setSelectedCashierId] = useState<number>(currentUser?.id || 1);
+  const [pinInput, setPinInput] = useState<string>('');
+  const [openShiftError, setOpenShiftError] = useState<string>('');
+  const [openingShiftLoading, setOpeningShiftLoading] = useState<boolean>(false);
 
   const [xReportData, setXReportData] = useState<any | null>(null);
   const [zReportData, setZReportData] = useState<any | null>(null);
   const [showCloseModal, setShowCloseModal] = useState<boolean>(false);
   const [showOpenModal, setShowOpenModal] = useState<boolean>(false);
   const [shiftHistory, setShiftHistory] = useState<any[]>([]);
+
+  useEffect(() => {
+    if (currentUser?.id) {
+      setSelectedCashierId(currentUser.id);
+    }
+  }, [currentUser]);
 
   const fetchHistory = async () => {
     try {
@@ -48,13 +60,24 @@ export const ShiftManagementPage: React.FC = () => {
     }
   }, [activeShift]);
 
-  const handleOpenShift = async () => {
+  const handleOpenShift = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!pinInput) {
+      setOpenShiftError('PIN operator wajib diisi');
+      return;
+    }
+    setOpeningShiftLoading(true);
+    setOpenShiftError('');
     try {
-      await openShift(openingCashInput);
+      await openShift(openingCashInput, selectedCashierId, pinInput);
       setShowOpenModal(false);
+      setPinInput('');
+      setOpenShiftError('');
       fetchHistory();
     } catch (err: any) {
-      alert(err.message || 'Gagal membuka shift');
+      setOpenShiftError(err.message || 'Gagal membuka shift');
+    } finally {
+      setOpeningShiftLoading(false);
     }
   };
 
@@ -242,39 +265,155 @@ export const ShiftManagementPage: React.FC = () => {
         </div>
       </div>
 
-      {/* Modal Buka Shift */}
+      {/* Modal Buka Shift dengan Pilihan Operator & Verifikasi PIN */}
       {showOpenModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4">
-          <div className="bg-white rounded-2xl shadow-2xl max-w-sm w-full p-5 space-y-4">
-            <h3 className="font-extrabold text-sm text-slate-800">
-              Buka Sesi Shift Kasir Baru
-            </h3>
-            <div>
-              <label className="block text-xs font-bold text-slate-700 mb-1">
-                Modal Awal Uang Kembalian (Rp)
-              </label>
-              <input
-                type="number"
-                autoFocus
-                value={openingCashInput}
-                onChange={e => setOpeningCashInput(parseFloat(e.target.value) || 0)}
-                className="w-full px-3 py-2.5 rounded-xl border border-slate-300 font-mono text-lg font-bold"
-              />
-            </div>
-            <div className="flex justify-end gap-2">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6 space-y-4 animate-in fade-in">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <div className="p-2 bg-emerald-100 text-emerald-700 rounded-xl">
+                  <Clock className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-base text-slate-800">
+                    Buka Sesi Shift Kasir Baru
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    Pilih operator yang bertugas & masukkan PIN otorisasi
+                  </p>
+                </div>
+              </div>
               <button
-                onClick={() => setShowOpenModal(false)}
-                className="px-4 py-2 border rounded-xl text-xs font-bold text-slate-700"
+                type="button"
+                onClick={() => {
+                  setShowOpenModal(false);
+                  setOpenShiftError('');
+                  setPinInput('');
+                }}
+                className="text-slate-400 hover:text-slate-600 p-1 rounded-lg cursor-pointer text-sm"
               >
-                Batal
-              </button>
-              <button
-                onClick={handleOpenShift}
-                className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-xs"
-              >
-                Buka Shift
+                ✕
               </button>
             </div>
+
+            {openShiftError && (
+              <div className="p-3 bg-rose-50 border border-rose-200 text-rose-700 rounded-xl text-xs font-bold flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 shrink-0 text-rose-600" />
+                <span>{openShiftError}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleOpenShift} className="space-y-4">
+              {/* Pilihan Operator Kasir */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1.5">
+                  Pilih Operator Kasir yang Membuka Shift:
+                </label>
+                <select
+                  value={selectedCashierId}
+                  onChange={e => {
+                    setSelectedCashierId(parseInt(e.target.value, 10));
+                    setOpenShiftError('');
+                  }}
+                  className="w-full px-3 py-2.5 rounded-xl border border-slate-300 bg-white font-bold text-xs text-slate-800 focus:outline-emerald-500 cursor-pointer"
+                >
+                  {(users && users.length > 0 ? users.filter(u => u.is_active !== 0) : (currentUser ? [currentUser] : [])).map(u => (
+                    <option key={u.id} value={u.id}>
+                      {u.name} — {u.role === 'owner' ? 'Owner / Pemilik' : u.role === 'supervisor' ? 'Supervisor' : 'Kasir'} (@{u.username})
+                    </option>
+                  ))}
+                </select>
+                <span className="text-[10.5px] text-slate-500 mt-1 block">
+                  Sesi shift kasir dan pembukuan uang laci akan terdaftar atas nama operator ini.
+                </span>
+              </div>
+
+              {/* PIN Akun Operator */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1.5 flex items-center justify-between">
+                  <span>PIN Operator (6 Digit) <span className="text-rose-500">*</span></span>
+                  <span className="text-[10.5px] font-normal text-slate-400">PIN Akun Operator</span>
+                </label>
+                <div className="relative">
+                  <input
+                    type="password"
+                    maxLength={6}
+                    autoFocus
+                    placeholder="••••••"
+                    value={pinInput}
+                    onChange={e => {
+                      setPinInput(e.target.value.replace(/\D/g, ''));
+                      setOpenShiftError('');
+                    }}
+                    className="w-full px-3 py-2.5 rounded-xl border border-slate-300 font-mono text-center text-lg tracking-widest font-bold text-slate-900 focus:outline-emerald-500"
+                    required
+                  />
+                  <Lock className="w-4 h-4 text-slate-400 absolute right-3 top-3.5" />
+                </div>
+                <span className="text-[10.5px] text-slate-500 mt-1 block">
+                  Wajib memasukkan PIN akun operator untuk mengonfirmasi pembukaan shift.
+                </span>
+              </div>
+
+              {/* Modal Awal Uang Kembalian */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1.5">
+                  Modal Awal Uang Kembalian (Rp)
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  step="10000"
+                  value={openingCashInput}
+                  onChange={e => setOpeningCashInput(parseFloat(e.target.value) || 0)}
+                  className="w-full px-3 py-2.5 rounded-xl border border-slate-300 font-mono text-base font-bold text-slate-900 focus:outline-emerald-500"
+                />
+                <div className="grid grid-cols-3 gap-2 mt-2">
+                  {[100000, 200000, 500000].map(amt => (
+                    <button
+                      key={amt}
+                      type="button"
+                      onClick={() => setOpeningCashInput(amt)}
+                      className={`py-1 rounded-lg text-[11px] font-bold border transition cursor-pointer ${
+                        openingCashInput === amt
+                          ? 'bg-emerald-50 border-emerald-500 text-emerald-800'
+                          : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                      }`}
+                    >
+                      Rp {amt.toLocaleString('id-ID')}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowOpenModal(false);
+                    setOpenShiftError('');
+                    setPinInput('');
+                  }}
+                  className="px-4 py-2 border rounded-xl text-xs font-bold text-slate-700 hover:bg-slate-50 cursor-pointer"
+                >
+                  Batal
+                </button>
+                <button
+                  type="submit"
+                  disabled={openingShiftLoading || !pinInput}
+                  className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-xs flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                >
+                  {openingShiftLoading ? (
+                    <span>Memverifikasi PIN...</span>
+                  ) : (
+                    <>
+                      <CheckCircle2 className="w-4 h-4" />
+                      <span>Verifikasi & Buka Shift</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

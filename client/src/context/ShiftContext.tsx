@@ -6,7 +6,7 @@ interface ShiftContextType {
   activeShift: Shift | null;
   loading: boolean;
   refreshShift: () => Promise<void>;
-  openShift: (openingCash: number) => Promise<Shift>;
+  openShift: (openingCash: number, cashierId?: number, pin?: string) => Promise<any>;
   closeShift: (actualCash: number, notes?: string) => Promise<any>;
   addCashMovement: (type: 'CASH_IN' | 'CASH_OUT', amount: number, reason: string) => Promise<void>;
 }
@@ -14,7 +14,7 @@ interface ShiftContextType {
 const ShiftContext = createContext<ShiftContextType | undefined>(undefined);
 
 export const ShiftProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { currentUser } = useAuth();
+  const { currentUser, setAuthenticatedUser } = useAuth();
   const [activeShift, setActiveShift] = useState<Shift | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -35,18 +35,22 @@ export const ShiftProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     refreshShift();
   }, [refreshShift]);
 
-  const openShift = async (openingCash: number) => {
-    if (!currentUser) throw new Error('Silakan login terlebih dahulu');
+  const openShift = async (openingCash: number, cashierId?: number, pin?: string) => {
+    const targetCashierId = cashierId || currentUser?.id;
+    if (!targetCashierId) throw new Error('Silakan pilih operator');
     const res = await fetch('/api/shifts/open', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ cashierId: currentUser.id, openingCash }),
+      body: JSON.stringify({ cashierId: targetCashierId, openingCash, pin }),
     });
     if (!res.ok) {
       const err = await res.json();
       throw new Error(err.error || 'Gagal membuka shift');
     }
     const data = await res.json();
+    if (data.user && setAuthenticatedUser) {
+      setAuthenticatedUser(data.user, data.token);
+    }
     await refreshShift();
     return data;
   };

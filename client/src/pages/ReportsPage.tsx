@@ -139,12 +139,15 @@ export const ReportsPage: React.FC = () => {
     fetchOrders();
     fetchReturns();
     fetchAnalytics(analyticsPeriod);
-    if (result.returnReceiptText) {
-      setSelectedReceiptText(result.returnReceiptText);
-      setSelectedInvoiceNo(result.return?.return_no || 'RETUR');
+    const receipt = result.returnReceiptText || result.receiptText;
+    const retNo = result.return?.return_no || result.return_no || 'RETUR';
+    if (result.message) {
+      alert(result.message);
+    }
+    if (receipt) {
+      setSelectedReceiptText(receipt);
+      setSelectedInvoiceNo(retNo);
       setIsReceiptOpen(true);
-    } else {
-      alert('Retur penjualan berhasil diproses!');
     }
   };
 

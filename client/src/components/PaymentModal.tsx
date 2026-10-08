@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { 
   Banknote, QrCode, CreditCard, Users, Layers, 
-  Check, X, AlertCircle, Loader2, ArrowRight, UserPlus 
+  Check, X, AlertCircle, Loader2, ArrowRight, UserPlus, User 
 } from 'lucide-react';
 import { useCart } from '../context/CartContext';
 import { useShift } from '../context/ShiftContext';
@@ -23,6 +23,7 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose, onS
   const [splitCash, setSplitCash] = useState<number>(0);
   const [splitNonCash, setSplitNonCash] = useState<number>(0);
   const [selectedCustomerId, setSelectedCustomerId] = useState<number | null>(null);
+  const [showCustomerPicker, setShowCustomerPicker] = useState<boolean>(false);
   const [customers, setCustomers] = useState<any[]>([]);
   const [customerSearch, setCustomerSearch] = useState<string>('');
   const [notes, setNotes] = useState<string>('');
@@ -218,6 +219,228 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose, onS
           </div>
         </div>
 
+        {/* Universal Customer / Member Selection Bar (Bisa untuk Tunai, QRIS, Kasbon, dll) */}
+        <div className="bg-slate-50 px-4 py-2.5 border-b border-slate-200">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 overflow-hidden">
+              <User className="w-4 h-4 text-slate-500 shrink-0" />
+              <span className="text-xs font-bold text-slate-700 shrink-0">Pelanggan / Member:</span>
+              {selectedCustomerId ? (
+                <div className="flex items-center gap-1.5 bg-blue-100 text-blue-900 px-2.5 py-0.5 rounded-lg text-xs font-bold border border-blue-200 truncate">
+                  <span className="truncate">{customers.find(c => c.id === selectedCustomerId)?.name || 'Pelanggan Terpilih'}</span>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedCustomerId(null)}
+                    className="text-blue-500 hover:text-rose-600 shrink-0 cursor-pointer p-0.5"
+                    title="Batal pilih pelanggan (Jadikan Pelanggan Umum)"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </div>
+              ) : (
+                <span className="text-xs text-slate-400 italic">Umum (Tanpa Catatan Member)</span>
+              )}
+            </div>
+
+            <div className="flex items-center gap-1.5 shrink-0">
+              <button
+                type="button"
+                onClick={() => setShowCustomerPicker(!showCustomerPicker)}
+                className={`px-2.5 py-1 rounded-lg text-xs font-bold border transition flex items-center gap-1 cursor-pointer ${
+                  showCustomerPicker ? 'bg-blue-600 text-white border-blue-600 shadow-2xs' : 'bg-white hover:bg-slate-100 text-slate-700 border-slate-300'
+                }`}
+              >
+                <Users className="w-3 h-3" />
+                <span>{selectedCustomerId ? 'Ganti Member' : 'Pilih Member'}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowAddCustomer(!showAddCustomer);
+                  setShowCustomerPicker(true);
+                }}
+                className="px-2.5 py-1 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-lg text-xs font-bold border border-blue-200 transition flex items-center gap-1 cursor-pointer"
+              >
+                <UserPlus className="w-3 h-3" />
+                <span>+ Baru</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Expandable Customer Picker Panel */}
+          {showCustomerPicker && (
+            <div className="mt-2.5 p-3.5 bg-white rounded-2xl border border-slate-200 shadow-sm space-y-3 animate-in fade-in">
+              {/* Inline Add Customer Form */}
+              {showAddCustomer && (
+                <div className="bg-blue-50/70 border border-blue-200 rounded-xl p-3 space-y-2.5">
+                  <div className="flex items-center justify-between border-b border-blue-200/60 pb-1.5">
+                    <span className="text-xs font-extrabold text-blue-900 flex items-center gap-1.5">
+                      <UserPlus className="w-3.5 h-3.5 text-blue-600" />
+                      <span>Registrasi Pelanggan Baru</span>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setShowAddCustomer(false)}
+                      className="text-slate-400 hover:text-slate-600 text-xs cursor-pointer"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+
+                  {addCustError && (
+                    <div className="p-2 bg-rose-50 border border-rose-200 text-rose-700 rounded-xl text-xs flex items-center gap-1.5 font-medium">
+                      <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                      <span>{addCustError}</span>
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-700 mb-0.5">
+                        Nama Pelanggan <span className="text-rose-500">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="Contoh: Pak Budi"
+                        value={newCustName}
+                        onChange={e => setNewCustName(e.target.value)}
+                        className="w-full px-3 py-1.5 rounded-xl border border-slate-300 bg-white text-xs font-semibold focus:outline-blue-500"
+                        required
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-700 mb-0.5">
+                        No. HP / WhatsApp
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="Contoh: 08123456789"
+                        value={newCustPhone}
+                        onChange={e => setNewCustPhone(e.target.value)}
+                        className="w-full px-3 py-1.5 rounded-xl border border-slate-300 bg-white font-mono text-xs focus:outline-blue-500"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-700 mb-0.5">
+                        Plafon Kasbon (Rp)
+                      </label>
+                      <input
+                        type="number"
+                        min="0"
+                        step="50000"
+                        value={newCustCreditLimit}
+                        onChange={e => setNewCustCreditLimit(e.target.value)}
+                        className="w-full px-3 py-1.5 rounded-xl border border-slate-300 bg-white font-mono text-xs font-bold text-slate-800 focus:outline-blue-500"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-700 mb-0.5">
+                        Alamat
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="Contoh: RT 03 / RW 02"
+                        value={newCustAddress}
+                        onChange={e => setNewCustAddress(e.target.value)}
+                        className="w-full px-3 py-1.5 rounded-xl border border-slate-300 bg-white text-xs focus:outline-blue-500"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex justify-end gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => setShowAddCustomer(false)}
+                      className="px-3 py-1 rounded-xl border border-slate-300 bg-white text-slate-700 text-xs font-bold hover:bg-slate-50 cursor-pointer"
+                    >
+                      Batal
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleCreateCustomer}
+                      disabled={savingCustomer}
+                      className="px-3.5 py-1 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-xs disabled:opacity-50"
+                    >
+                      {savingCustomer ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+                      <span>Simpan & Pilih</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Search Customer Input */}
+              <input
+                type="text"
+                placeholder="Cari nama atau nomor HP pelanggan..."
+                value={customerSearch}
+                onChange={e => setCustomerSearch(e.target.value)}
+                className="w-full px-3 py-1.5 rounded-xl border border-slate-300 text-xs focus:outline-hidden focus:ring-2 focus:ring-blue-500"
+              />
+
+              {/* Customer Cards Grid */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-48 overflow-y-auto p-0.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedCustomerId(null);
+                    setShowCustomerPicker(false);
+                  }}
+                  className={`p-2 rounded-xl border text-left transition cursor-pointer text-xs ${
+                    selectedCustomerId === null
+                      ? 'bg-slate-100 border-slate-400 font-bold text-slate-800'
+                      : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                  }`}
+                >
+                  <div className="font-bold">Pelanggan Umum (Tanpa Member)</div>
+                  <div className="text-[10px] text-slate-400">Transaksi non-member anonim</div>
+                </button>
+                {customers
+                  .filter(c => 
+                    c.name.toLowerCase().includes(customerSearch.toLowerCase()) || 
+                    (c.phone && c.phone.includes(customerSearch))
+                  )
+                  .map(c => {
+                    const isSelected = selectedCustomerId === c.id;
+                    const wouldExceedLimit = c.credit_limit > 0 && (c.current_debt + grandTotal > c.credit_limit);
+                    return (
+                      <button
+                        key={c.id}
+                        type="button"
+                        onClick={() => {
+                          setSelectedCustomerId(c.id);
+                          setShowCustomerPicker(false);
+                        }}
+                        className={`p-2 rounded-xl border text-left transition cursor-pointer text-xs relative ${
+                          isSelected
+                            ? 'bg-blue-50 border-blue-600 font-bold text-blue-900 ring-2 ring-blue-500/20'
+                            : 'bg-white border-slate-200 hover:bg-slate-50'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="font-bold truncate">{c.name}</span>
+                          {wouldExceedLimit && paymentMethod === 'KASBON' && (
+                            <span className="text-[9px] font-bold text-rose-600 bg-rose-50 px-1 py-0.5 rounded">
+                              Limit
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-[10px] text-slate-500 font-mono flex items-center justify-between mt-0.5">
+                          <span>{c.phone || '-'}</span>
+                          {c.current_debt > 0 && (
+                            <span className="text-amber-700 font-bold">Kasbon: Rp {c.current_debt.toLocaleString('id-ID')}</span>
+                          )}
+                        </div>
+                      </button>
+                    );
+                  })}
+              </div>
+            </div>
+          )}
+        </div>
+
         {/* Payment Methods Tabs */}
         <div className="grid grid-cols-5 gap-1 p-2 bg-slate-100 border-b border-slate-200 text-xs font-bold">
           {[
@@ -364,193 +587,110 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose, onS
 
           {paymentMethod === 'KASBON' && (
             <div className="space-y-3 py-1">
-              <div className="flex items-center justify-between">
-                <label className="block text-xs font-bold text-slate-700">
-                  Pilih Pelanggan Kasbon (Wajib Terdaftar)
-                </label>
-                <div className="flex items-center gap-2">
-                  <span className="text-[11px] text-slate-500 font-medium hidden sm:inline">
-                    {customers.length} Pelanggan
-                  </span>
+              {!selectedCustomerId ? (
+                <div className="p-4 bg-amber-50 border border-amber-300 rounded-2xl text-amber-900 space-y-2.5 animate-in fade-in">
+                  <div className="flex items-center gap-2 font-bold text-xs">
+                    <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+                    <span>Wajib Memilih Pelanggan Terdaftar untuk Kasbon!</span>
+                  </div>
+                  <p className="text-[11.5px] text-amber-800 leading-relaxed">
+                    Pembayaran kasbon (hutang tempo) harus dicatat atas nama pelanggan terdaftar untuk pencatatan buku piutang. Silakan pilih atau daftarkan pelanggan baru pada bilah <strong>Pelanggan / Member</strong> di atas.
+                  </p>
                   <button
                     type="button"
                     onClick={() => {
-                      setShowAddCustomer(!showAddCustomer);
-                      setAddCustError('');
+                      setShowCustomerPicker(true);
                     }}
-                    className="px-2.5 py-1 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-lg text-xs font-bold flex items-center gap-1 border border-blue-200 cursor-pointer transition"
+                    className="px-3.5 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-xs"
                   >
-                    <UserPlus className="w-3.5 h-3.5" />
-                    <span>{showAddCustomer ? 'Batal Tambah' : '+ Pelanggan Baru'}</span>
+                    <Users className="w-3.5 h-3.5" />
+                    <span>Buka Pilihan Pelanggan Sekarang</span>
+                  </button>
+                </div>
+              ) : (
+                (() => {
+                  const sel = customers.find(c => c.id === selectedCustomerId);
+                  const debt = sel?.current_debt || 0;
+                  const limit = sel?.credit_limit || 0;
+                  const newTotal = debt + grandTotal;
+                  const exceeds = limit > 0 && newTotal > limit;
+                  return (
+                    <div className="p-4 bg-blue-50/80 border border-blue-200 rounded-2xl space-y-3 text-xs">
+                      <div className="flex items-center justify-between pb-2 border-b border-blue-200/60 font-bold">
+                        <div className="flex items-center gap-2 text-blue-900">
+                          <Users className="w-4 h-4 text-blue-600" />
+                          <span className="text-sm font-extrabold">{sel?.name}</span>
+                        </div>
+                        {exceeds ? (
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-100 text-rose-800 border border-rose-300 animate-pulse">
+                            Melebihi Plafon Limit!
+                          </span>
+                        ) : (
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300">
+                            Plafon Aman
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="grid grid-cols-3 gap-2 text-center">
+                        <div className="p-2.5 bg-white rounded-xl border border-blue-100">
+                          <span className="text-[10px] text-slate-500 font-semibold block">Hutang Aktif</span>
+                          <span className="font-mono font-bold text-slate-800 text-xs mt-0.5 block">
+                            Rp {debt.toLocaleString('id-ID')}
+                          </span>
+                        </div>
+                        <div className="p-2.5 bg-white rounded-xl border border-blue-100">
+                          <span className="text-[10px] text-slate-500 font-semibold block">Batas Plafon</span>
+                          <span className="font-mono font-bold text-slate-800 text-xs mt-0.5 block">
+                            {limit > 0 ? `Rp ${limit.toLocaleString('id-ID')}` : 'Bebas'}
+                          </span>
+                        </div>
+                        <div className={`p-2.5 rounded-xl border ${exceeds ? 'bg-rose-50 border-rose-200' : 'bg-white border-blue-100'}`}>
+                          <span className="text-[10px] text-slate-500 font-semibold block">Total Setelah Belanja</span>
+                          <span className={`font-mono font-black text-xs mt-0.5 block ${exceeds ? 'text-rose-700' : 'text-emerald-700'}`}>
+                            Rp {newTotal.toLocaleString('id-ID')}
+                          </span>
+                        </div>
+                      </div>
+
+                      {exceeds && (
+                        <div className="p-2.5 bg-rose-50 border border-rose-200 rounded-xl text-rose-800 text-[11px] font-medium leading-relaxed">
+                          ⚠️ <strong>Peringatan Kasbon:</strong> Total hutang baru (Rp {newTotal.toLocaleString('id-ID')}) melebihi plafon kredit maksimal pelanggan (Rp {limit.toLocaleString('id-ID')}).
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()
+              )}
+
+              <div className="flex items-center justify-between p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs mt-1">
+                <div className="text-slate-600">
+                  {selectedCustomerId ? (
+                    <span>Pelanggan kasbon sudah dipilih. Ingin mengganti atau cari pelanggan lain?</span>
+                  ) : (
+                    <span className="text-amber-700 font-semibold">⚠️ Wajib pilih pelanggan di atas sebelum melanjutkan transaksi kasbon.</span>
+                  )}
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setShowCustomerPicker(true)}
+                    className="px-3 py-1.5 rounded-lg bg-blue-50 text-blue-700 hover:bg-blue-100 font-bold text-xs cursor-pointer border border-blue-200 transition"
+                  >
+                    {selectedCustomerId ? 'Ganti Pelanggan' : 'Pilih Pelanggan'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowCustomerPicker(true);
+                      setShowAddCustomer(true);
+                    }}
+                    className="px-3 py-1.5 rounded-lg bg-white text-slate-700 hover:bg-slate-100 font-bold text-xs cursor-pointer border border-slate-300 transition"
+                  >
+                    + Pelanggan Baru
                   </button>
                 </div>
               </div>
-
-              {/* Inline Add Customer Form */}
-              {showAddCustomer && (
-                <div className="bg-blue-50/70 border border-blue-200 rounded-2xl p-3.5 space-y-3 animate-in fade-in">
-                  <div className="flex items-center justify-between border-b border-blue-200/60 pb-2">
-                    <span className="text-xs font-extrabold text-blue-900 flex items-center gap-1.5">
-                      <UserPlus className="w-4 h-4 text-blue-600" />
-                      <span>Registrasi Pelanggan Baru untuk Kasbon</span>
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => setShowAddCustomer(false)}
-                      className="text-slate-400 hover:text-slate-600 text-xs cursor-pointer"
-                    >
-                      <X className="w-4 h-4" />
-                    </button>
-                  </div>
-
-                  {addCustError && (
-                    <div className="p-2 bg-rose-50 border border-rose-200 text-rose-700 rounded-xl text-xs flex items-center gap-1.5 font-medium">
-                      <AlertCircle className="w-3.5 h-3.5 shrink-0" />
-                      <span>{addCustError}</span>
-                    </div>
-                  )}
-
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
-                    <div>
-                      <label className="block text-[11px] font-bold text-slate-700 mb-1">
-                        Nama Pelanggan <span className="text-rose-500">*</span>
-                      </label>
-                      <input
-                        type="text"
-                        placeholder="Contoh: Pak Budi"
-                        value={newCustName}
-                        onChange={e => setNewCustName(e.target.value)}
-                        className="w-full px-3 py-1.5 rounded-xl border border-slate-300 bg-white text-xs font-semibold focus:outline-blue-500"
-                        required
-                      />
-                    </div>
-
-                    <div>
-                      <label className="block text-[11px] font-bold text-slate-700 mb-1">
-                        No. HP / WhatsApp
-                      </label>
-                      <input
-                        type="text"
-                        placeholder="Contoh: 08123456789"
-                        value={newCustPhone}
-                        onChange={e => setNewCustPhone(e.target.value)}
-                        className="w-full px-3 py-1.5 rounded-xl border border-slate-300 bg-white font-mono text-xs focus:outline-blue-500"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="block text-[11px] font-bold text-slate-700 mb-1">
-                        Batas Plafon Kasbon (Rp)
-                      </label>
-                      <input
-                        type="number"
-                        min="0"
-                        step="50000"
-                        value={newCustCreditLimit}
-                        onChange={e => setNewCustCreditLimit(e.target.value)}
-                        className="w-full px-3 py-1.5 rounded-xl border border-slate-300 bg-white font-mono text-xs font-bold text-slate-800 focus:outline-blue-500"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="block text-[11px] font-bold text-slate-700 mb-1">
-                        Alamat / Catatan
-                      </label>
-                      <input
-                        type="text"
-                        placeholder="Contoh: RT 03 / RW 02"
-                        value={newCustAddress}
-                        onChange={e => setNewCustAddress(e.target.value)}
-                        className="w-full px-3 py-1.5 rounded-xl border border-slate-300 bg-white text-xs focus:outline-blue-500"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="flex justify-end gap-2 pt-1">
-                    <button
-                      type="button"
-                      onClick={() => setShowAddCustomer(false)}
-                      className="px-3 py-1.5 rounded-xl border border-slate-300 bg-white text-slate-700 text-xs font-bold hover:bg-slate-50 cursor-pointer"
-                    >
-                      Batal
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleCreateCustomer}
-                      disabled={savingCustomer}
-                      className="px-4 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-xs disabled:opacity-50"
-                    >
-                      {savingCustomer ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
-                      <span>Simpan & Pilih Pelanggan</span>
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {/* Search Customer */}
-              <input
-                type="text"
-                placeholder="Cari nama atau nomor HP pelanggan..."
-                value={customerSearch}
-                onChange={e => setCustomerSearch(e.target.value)}
-                className="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs focus:outline-hidden focus:ring-2 focus:ring-blue-500"
-              />
-
-              {/* Customer Cards Grid */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-56 overflow-y-auto p-0.5">
-                {customers
-                  .filter(c => 
-                    c.name.toLowerCase().includes(customerSearch.toLowerCase()) || 
-                    (c.phone && c.phone.includes(customerSearch))
-                  )
-                  .map(c => {
-                    const isSelected = selectedCustomerId === c.id;
-                    const wouldExceedLimit = c.credit_limit > 0 && (c.current_debt + grandTotal > c.credit_limit);
-
-                    return (
-                      <button
-                        key={c.id}
-                        type="button"
-                        onClick={() => setSelectedCustomerId(c.id)}
-                        className={`p-3 rounded-xl border text-left transition cursor-pointer relative ${
-                          isSelected
-                            ? 'bg-blue-50 border-blue-600 ring-2 ring-blue-500/20'
-                            : 'bg-white border-slate-200 hover:bg-slate-50'
-                        }`}
-                      >
-                        <div className="flex items-center justify-between">
-                          <div className="font-extrabold text-xs text-slate-800">{c.name}</div>
-                          {wouldExceedLimit && (
-                            <span className="text-[9px] font-bold text-rose-600 bg-rose-50 px-1 py-0.5 rounded">
-                              Melebihi Plafon
-                            </span>
-                          )}
-                        </div>
-
-                        <div className="text-[10px] text-slate-500 mt-1">
-                          Hutang saat ini: <span className="font-mono font-bold text-slate-700">Rp {(c.current_debt || 0).toLocaleString('id-ID')}</span>
-                        </div>
-
-                        <div className="flex items-center justify-between mt-0.5 text-[10px]">
-                          <span className="text-slate-400">
-                            Limit: {c.credit_limit > 0 ? `Rp ${c.credit_limit.toLocaleString('id-ID')}` : 'Bebas'}
-                          </span>
-                          <span className={`font-mono font-bold ${
-                            wouldExceedLimit ? 'text-rose-600' : 'text-emerald-600'
-                          }`}>
-                            Total Baru: Rp {((c.current_debt || 0) + grandTotal).toLocaleString('id-ID')}
-                          </span>
-                        </div>
-                      </button>
-                    );
-                  })}
-              </div>
-
-              {customers.length === 0 && (
-                <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 text-center text-xs text-slate-500">
-                  Belum ada pelanggan terdaftar. Tambahkan pelanggan terlebih dahulu pada menu "Pelanggan & Kasbon".
-                </div>
-              )}
             </div>
           )}
 
