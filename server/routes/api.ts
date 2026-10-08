@@ -26,13 +26,16 @@ db.exec(`
 `);
 
 // ============================================================
-// 1. AUTH & USERS
+// 1. AUTH & USERS & RBAC OPERATOR MANAGEMENT
 // ============================================================
 apiRouter.post('/auth/login', (req: Request, res: Response) => {
   const { username, password } = req.body;
-  const user = db.prepare('SELECT id, username, password, name, role, pin FROM users WHERE username = ?').get(username) as any;
+  const user = db.prepare('SELECT id, username, password, name, role, pin, is_active FROM users WHERE username = ?').get(username) as any;
   if (!user || !verifySecret(password, user.password)) {
     return res.status(401).json({ error: 'Username atau password salah' });
+  }
+  if (user.is_active === 0) {
+    return res.status(403).json({ error: 'Akun operator ini telah dinonaktifkan oleh Administrator' });
   }
   const tenantId = req.tenantId || 'default';
   const token = createAuthToken({ tenantId, userId: user.id, username: user.username, role: user.role });
@@ -41,10 +44,13 @@ apiRouter.post('/auth/login', (req: Request, res: Response) => {
 
 apiRouter.post('/auth/login-pin', (req: Request, res: Response) => {
   const { pin } = req.body;
-  const allUsers = db.prepare('SELECT id, username, name, role, pin FROM users').all() as any[];
+  const allUsers = db.prepare('SELECT id, username, name, role, pin, is_active FROM users').all() as any[];
   const user = allUsers.find(u => verifySecret(pin, u.pin));
   if (!user) {
     return res.status(401).json({ error: 'PIN tidak terdaftar' });
+  }
+  if (user.is_active === 0) {
+    return res.status(403).json({ error: 'Akun operator ini telah dinonaktifkan oleh Administrator' });
   }
   const tenantId = req.tenantId || 'default';
   const token = createAuthToken({ tenantId, userId: user.id, username: user.username, role: user.role });
@@ -61,9 +67,131 @@ apiRouter.post('/auth/verify-pin', (req: Request, res: Response) => {
   res.json({ success: true, user: { id: supervisor.id, name: supervisor.name, role: supervisor.role } });
 });
 
+// Verifikasi PIN / Password sebelum beralih operator (mencegah kasir klik owner langsung)
+apiRouter.post('/auth/switch-user-verify', (req: Request, res: Response) => {
+  const { userId, secret } = req.body;
+  if (!userId || !secret) {
+    return res.status(400).json({ success: false, error: 'User ID dan PIN/Password wajib diisi' });
+  }
+  const user = db.prepare('SELECT id, username, password, name, role, pin, is_active FROM users WHERE id = ?').get(userId) as any;
+  if (!user) {
+    return res.status(404).json({ success: false, error: 'Operator tidak ditemukan' });
+  }
+  if (user.is_active === 0) {
+    return res.status(403).json({ success: false, error: 'Akun operator ini sedang dinonaktifkan' });
+  }
+
+  const isPassValid = verifySecret(secret, user.password);
+  const isPinValid = user.pin ? verifySecret(secret, user.pin) : false;
+  if (!isPassValid && !isPinValid) {
+    return res.status(401).json({ success: false, error: 'PIN atau Password tidak sesuai untuk operator ini' });
+  }
+
+  const tenantId = req.tenantId || 'default';
+  const token = createAuthToken({ tenantId, userId: user.id, username: user.username, role: user.role });
+  res.json({
+    success: true,
+    token,
+    tenantId,
+    user: { id: user.id, username: user.username, name: user.name, role: user.role },
+  });
+});
+
+// Daftar Seluruh Operator Toko
 apiRouter.get('/users', (_req: Request, res: Response) => {
-  const users = db.prepare('SELECT id, username, name, role FROM users').all();
+  const users = db.prepare(`
+    SELECT id, username, name, role, is_active, created_at,
+           CASE WHEN pin IS NOT NULL AND pin != '' THEN 1 ELSE 0 END as has_pin
+    FROM users
+    ORDER BY id ASC
+  `).all();
   res.json(users);
+});
+
+// Tambah Akun Operator Baru (Admin / Owner Only)
+apiRouter.post('/users', (req: Request, res: Response) => {
+  try {
+    const { username, password, name, role, pin } = req.body;
+    if (!username || !password || !name) {
+      return res.status(400).json({ error: 'Username, password, dan nama wajib diisi' });
+    }
+    const cleanRole = ['owner', 'supervisor', 'cashier'].includes(role) ? role : 'cashier';
+    const cleanUsername = username.trim().toLowerCase();
+
+    const existing = db.prepare('SELECT id FROM users WHERE LOWER(username) = ?').get(cleanUsername);
+    if (existing) {
+      return res.status(400).json({ error: `Username "${username}" sudah digunakan operator lain` });
+    }
+
+    const { hashSecret } = require('../utils/auth-token');
+    const resInsert = db.prepare(`
+      INSERT INTO users (username, password, name, role, pin, is_active)
+      VALUES (?, ?, ?, ?, ?, 1)
+    `).run(
+      cleanUsername,
+      hashSecret(password),
+      name.trim(),
+      cleanRole,
+      pin ? hashSecret(String(pin).trim()) : null
+    );
+
+    res.json({
+      success: true,
+      id: resInsert.lastInsertRowid,
+      message: `Operator ${name} (${cleanRole}) berhasil didaftarkan`,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Edit Akun Operator
+apiRouter.put('/users/:id', (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { name, role, password, pin, is_active } = req.body;
+    const existing = db.prepare('SELECT * FROM users WHERE id = ?').get(id) as any;
+    if (!existing) return res.status(404).json({ error: 'Operator tidak ditemukan' });
+
+    const newName = name ? name.trim() : existing.name;
+    const newRole = role && ['owner', 'supervisor', 'cashier'].includes(role) ? role : existing.role;
+
+    const { hashSecret } = require('../utils/auth-token');
+    const newPassword = password ? hashSecret(password) : existing.password;
+    const newPin = pin !== undefined ? (pin ? hashSecret(String(pin).trim()) : null) : existing.pin;
+    const newIsActive = is_active !== undefined ? (is_active ? 1 : 0) : (existing.is_active ?? 1);
+
+    db.prepare(`
+      UPDATE users
+      SET name = ?, role = ?, password = ?, pin = ?, is_active = ?
+      WHERE id = ?
+    `).run(newName, newRole, newPassword, newPin, newIsActive, id);
+
+    res.json({ success: true, message: `Data operator ${newName} berhasil diperbarui` });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Hapus Akun Operator (Proteksi Owner)
+apiRouter.delete('/users/:id', (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const existing = db.prepare('SELECT * FROM users WHERE id = ?').get(id) as any;
+    if (!existing) return res.status(404).json({ error: 'Operator tidak ditemukan' });
+
+    if (existing.role === 'owner') {
+      const ownerCount = (db.prepare("SELECT COUNT(*) as c FROM users WHERE role = 'owner'").get() as any).c;
+      if (ownerCount <= 1) {
+        return res.status(400).json({ error: 'Tidak dapat menghapus Owner utama satu-satunya dari sistem' });
+      }
+    }
+
+    db.prepare('DELETE FROM users WHERE id = ?').run(id);
+    res.json({ success: true, message: `Operator ${existing.name} berhasil dihapus` });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ============================================================
@@ -767,6 +895,36 @@ apiRouter.post('/ppob/deposit/sync-ledger', async (_req: Request, res: Response)
   }
 });
 
+apiRouter.get('/ppob/deposit/history', (_req: Request, res: Response) => {
+  try {
+    const history = PPOBService.getDepositHistory();
+    res.json(history);
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+apiRouter.post('/ppob/deposit/:refId/approve', async (req: Request, res: Response) => {
+  try {
+    const { refId } = req.params;
+    const result = await PPOBService.approveDeposit(refId);
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+apiRouter.post('/ppob/deposit/:refId/reject', (req: Request, res: Response) => {
+  try {
+    const { refId } = req.params;
+    const { reason } = req.body;
+    const result = PPOBService.rejectDeposit(refId, reason);
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 apiRouter.get('/ppob/transactions', async (_req: Request, res: Response) => {
   // Jalankan sync pending di background jika ada transaksi PENDING
   PPOBService.syncAllPendingTransactions().catch(() => {});
@@ -1124,6 +1282,464 @@ apiRouter.post('/orders/:id/void', (req: Request, res: Response) => {
     res.json({ success: true, message: `Transaksi ${order.invoice_no} berhasil dibatalkan (VOID)` });
   } catch (err: any) {
     res.status(400).json({ error: err.message });
+  }
+});
+
+// ============================================================
+// 5.1 RETUR PENJUALAN (SALES RETURN)
+// ============================================================
+apiRouter.post('/returns', (req: Request, res: Response) => {
+  try {
+    const { order_id, items, refund_method, reason, cashier_id, shift_id } = req.body;
+    if (!order_id || !Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: 'Order ID dan daftar barang retur wajib diisi' });
+    }
+
+    const order = db.prepare(`
+      SELECT o.*, u.name as cashier_name, c.name as customer_name
+      FROM orders o
+      JOIN users u ON o.cashier_id = u.id
+      LEFT JOIN customers c ON o.customer_id = c.id
+      WHERE o.id = ?
+    `).get(order_id) as any;
+
+    if (!order) return res.status(404).json({ error: 'Faktur penjualan tidak ditemukan' });
+    if (order.status !== 'PAID') return res.status(400).json({ error: 'Hanya pesanan PAID yang dapat diretur' });
+
+    const orderItems = db.prepare('SELECT * FROM order_items WHERE order_id = ?').all(order_id) as any[];
+    const previousReturns = db.prepare(`
+      SELECT sri.* FROM sales_return_items sri
+      JOIN sales_returns sr ON sri.return_id = sr.id
+      WHERE sr.order_id = ?
+    `).all(order_id) as any[];
+
+    // Hitung total retur dan validasi kuantitas
+    let totalRefund = 0;
+    const validatedItems: any[] = [];
+
+    for (const retIt of items) {
+      const orig = orderItems.find(oi => oi.id === retIt.order_item_id || oi.product_id === retIt.product_id);
+      if (!orig) {
+        return res.status(400).json({ error: `Barang dengan ID ${retIt.product_id || retIt.order_item_id} tidak terdapat dalam faktur ini` });
+      }
+
+      const alreadyReturned = previousReturns
+        .filter(pr => pr.product_id === orig.product_id)
+        .reduce((sum, pr) => sum + pr.quantity, 0);
+
+      const maxReturnable = orig.quantity - alreadyReturned;
+      const requestedQty = parseFloat(retIt.quantity) || 0;
+
+      if (requestedQty <= 0) continue;
+      if (requestedQty > maxReturnable) {
+        return res.status(400).json({
+          error: `Kuantitas retur "${orig.item_name}" (${requestedQty}) melebihi sisa pembelian yang dapat diretur (${maxReturnable})`
+        });
+      }
+
+      const subtotalRefund = requestedQty * orig.unit_price;
+      totalRefund += subtotalRefund;
+
+      validatedItems.push({
+        product_id: orig.product_id,
+        item_name: orig.item_name,
+        quantity: requestedQty,
+        unit_price: orig.unit_price,
+        subtotal: subtotalRefund,
+        cost_price: orig.cost_price || 0,
+        restock_inventory: retIt.restock_inventory !== undefined ? (retIt.restock_inventory ? 1 : 0) : 1,
+      });
+    }
+
+    if (validatedItems.length === 0) {
+      return res.status(400).json({ error: 'Tidak ada barang yang diretur' });
+    }
+
+    const todayStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    const countToday = (db.prepare("SELECT COUNT(*) as c FROM sales_returns WHERE return_no LIKE ?").get(`RET-${todayStr}-%`) as any).c;
+    const returnNo = `RET-${todayStr}-${String(countToday + 1).padStart(3, '0')}`;
+    const cleanRefundMethod = refund_method === 'KASBON_REDUCTION' ? 'KASBON_REDUCTION' : 'CASH';
+
+    db.transaction(() => {
+      // 1. Insert sales_returns
+      const resRet = db.prepare(`
+        INSERT INTO sales_returns (
+          return_no, order_id, invoice_no, customer_id, total_refund,
+          refund_method, reason, cashier_id, shift_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        returnNo,
+        order.id,
+        order.invoice_no,
+        order.customer_id || null,
+        totalRefund,
+        cleanRefundMethod,
+        reason || 'Retur barang dari pelanggan',
+        cashier_id || order.cashier_id,
+        shift_id || order.shift_id
+      );
+
+      const returnId = resRet.lastInsertRowid;
+
+      // 2. Insert return items and restock if selected
+      let totalCostReversed = 0;
+      const insRetItem = db.prepare(`
+        INSERT INTO sales_return_items (
+          return_id, product_id, item_name, quantity, unit_price, subtotal, cost_price, restock_inventory
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+
+      for (const vi of validatedItems) {
+        insRetItem.run(
+          returnId,
+          vi.product_id,
+          vi.item_name,
+          vi.quantity,
+          vi.unit_price,
+          vi.subtotal,
+          vi.cost_price,
+          vi.restock_inventory
+        );
+
+        if (vi.restock_inventory === 1 && vi.product_id) {
+          db.prepare('UPDATE products SET stock_quantity = stock_quantity + ? WHERE id = ?').run(vi.quantity, vi.product_id);
+          totalCostReversed += (vi.cost_price * vi.quantity);
+        }
+      }
+
+      // 3. Double-entry Journal Entry for Return
+      const lines: any[] = [];
+      lines.push({
+        account_code: '4-1004',
+        debit: totalRefund,
+        credit: 0,
+        memo: `Retur penjualan ${returnNo} (Faktur ${order.invoice_no})`,
+      });
+
+      if (cleanRefundMethod === 'CASH') {
+        lines.push({
+          account_code: '1-1001',
+          debit: 0,
+          credit: totalRefund,
+          memo: `Pengembalian uang tunai retur ${returnNo}`,
+        });
+
+        if (shift_id) {
+          AccountingService.recordCashMovement({
+            type: 'CASH_OUT',
+            amount: totalRefund,
+            reason: `Pengembalian kas retur ${returnNo} (${order.invoice_no})`,
+          });
+        }
+      } else {
+        lines.push({
+          account_code: '1-1004',
+          debit: 0,
+          credit: totalRefund,
+          memo: `Pemotongan piutang kasbon retur ${returnNo}`,
+        });
+
+        if (order.customer_id) {
+          db.prepare('UPDATE customers SET current_debt = MAX(0, current_debt - ?) WHERE id = ?').run(totalRefund, order.customer_id);
+        }
+      }
+
+      if (totalCostReversed > 0) {
+        lines.push({
+          account_code: '1-1005',
+          debit: totalCostReversed,
+          credit: 0,
+          memo: `Pengembalian persediaan barang retur ${returnNo}`,
+        });
+        lines.push({
+          account_code: '5-1001',
+          debit: 0,
+          credit: totalCostReversed,
+          memo: `Pembalikan HPP barang retur ${returnNo}`,
+        });
+      }
+
+      AccountingService.createJournalEntry({
+        reference_type: 'RETURN',
+        reference_id: returnNo,
+        description: `Retur Penjualan ${returnNo} - Faktur ${order.invoice_no}`,
+        lines,
+      });
+    })();
+
+    const returnReceiptText = ThermalPrinterService.formatReturnReceiptText({
+      return_no: returnNo,
+      invoice_no: order.invoice_no,
+      created_at: new Date().toISOString(),
+      cashier_name: order.cashier_name,
+      customer_name: order.customer_name,
+      reason: reason || 'Retur barang',
+      refund_method: cleanRefundMethod,
+      total_refund: totalRefund,
+      items: validatedItems,
+    });
+
+    res.json({
+      success: true,
+      return_no: returnNo,
+      total_refund: totalRefund,
+      receiptText: returnReceiptText,
+      message: `Retur penjualan ${returnNo} berhasil diproses.`,
+    });
+  } catch (err: any) {
+    console.error('Sales return error:', err);
+    res.status(400).json({ error: err.message });
+  }
+});
+
+apiRouter.get('/returns', (_req: Request, res: Response) => {
+  try {
+    const returns = db.prepare(`
+      SELECT sr.*, u.name as cashier_name, c.name as customer_name
+      FROM sales_returns sr
+      LEFT JOIN users u ON sr.cashier_id = u.id
+      LEFT JOIN customers c ON sr.customer_id = c.id
+      ORDER BY sr.id DESC
+      LIMIT 100
+    `).all() as any[];
+
+    const returnIds = returns.map(r => r.id);
+    let itemsMap: Record<number, any[]> = {};
+    if (returnIds.length > 0) {
+      const allItems = db.prepare(`
+        SELECT * FROM sales_return_items WHERE return_id IN (${returnIds.map(() => '?').join(',')})
+      `).all(...returnIds) as any[];
+      allItems.forEach(it => {
+        if (!itemsMap[it.return_id]) itemsMap[it.return_id] = [];
+        itemsMap[it.return_id].push(it);
+      });
+    }
+
+    res.json(returns.map(r => ({ ...r, items: itemsMap[r.id] || [] })));
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+apiRouter.get('/orders/:id/returns', (req: Request, res: Response) => {
+  try {
+    const orderId = parseInt(req.params.id as string, 10);
+    const returns = db.prepare('SELECT * FROM sales_returns WHERE order_id = ? ORDER BY id DESC').all(orderId) as any[];
+    res.json(returns);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================
+// 5.2 PENGELUARAN UMUM & PEMASUKAN LAIN-LAIN
+// ============================================================
+apiRouter.get('/operational-transactions', (req: Request, res: Response) => {
+  try {
+    const type = req.query.type as string;
+    let query = `
+      SELECT ot.*, u.name as cashier_name, s.shift_number
+      FROM operational_transactions ot
+      LEFT JOIN users u ON ot.cashier_id = u.id
+      LEFT JOIN shifts s ON ot.shift_id = s.id
+    `;
+    const params: any[] = [];
+    if (type && ['EXPENSE', 'INCOME'].includes(type)) {
+      query += ' WHERE ot.type = ?';
+      params.push(type);
+    }
+    query += ' ORDER BY ot.id DESC LIMIT 100';
+    const txs = db.prepare(query).all(...params);
+    res.json(txs);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+apiRouter.post('/operational-transactions', (req: Request, res: Response) => {
+  try {
+    const { type, category, description, amount, payment_source, cashier_id, shift_id } = req.body;
+    const cleanAmount = parseFloat(amount);
+    if (!cleanAmount || cleanAmount <= 0) {
+      return res.status(400).json({ error: 'Nominal transaksi harus lebih dari 0' });
+    }
+    if (!category || !description) {
+      return res.status(400).json({ error: 'Kategori dan keterangan transaksi wajib diisi' });
+    }
+    const cleanType = type === 'INCOME' ? 'INCOME' : 'EXPENSE';
+    const cleanSource = payment_source === '1-1002' ? '1-1002' : '1-1001';
+
+    const todayStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    const prefix = cleanType === 'EXPENSE' ? 'BBN' : 'PMS';
+    const countToday = (db.prepare("SELECT COUNT(*) as c FROM operational_transactions WHERE tx_no LIKE ?").get(`${prefix}-${todayStr}-%`) as any).c;
+    const txNo = `${prefix}-${todayStr}-${String(countToday + 1).padStart(3, '0')}`;
+
+    db.transaction(() => {
+      // 1. Insert record
+      db.prepare(`
+        INSERT INTO operational_transactions (
+          tx_no, type, category, description, amount, payment_source, cashier_id, shift_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        txNo,
+        cleanType,
+        category.trim(),
+        description.trim(),
+        cleanAmount,
+        cleanSource,
+        cashier_id || null,
+        shift_id || null
+      );
+
+      // 2. Double-entry Journal Entry
+      if (cleanType === 'EXPENSE') {
+        AccountingService.createJournalEntry({
+          reference_type: 'EXPENSE',
+          reference_id: txNo,
+          description: `Pengeluaran [${category}]: ${description}`,
+          lines: [
+            {
+              account_code: '5-1003',
+              debit: cleanAmount,
+              credit: 0,
+              memo: `${category}: ${description}`,
+            },
+            {
+              account_code: cleanSource,
+              debit: 0,
+              credit: cleanAmount,
+              memo: `Pengeluaran kas/bank ${txNo}`,
+            },
+          ],
+        });
+
+        if (cleanSource === '1-1001' && shift_id) {
+          AccountingService.recordCashMovement({
+            type: 'CASH_OUT',
+            amount: cleanAmount,
+            reason: `[${category}] ${description}`,
+          });
+        }
+      } else {
+        AccountingService.createJournalEntry({
+          reference_type: 'INCOME',
+          reference_id: txNo,
+          description: `Pemasukan [${category}]: ${description}`,
+          lines: [
+            {
+              account_code: cleanSource,
+              debit: cleanAmount,
+              credit: 0,
+              memo: `Penerimaan kas/bank ${txNo}`,
+            },
+            {
+              account_code: '4-1003',
+              debit: 0,
+              credit: cleanAmount,
+              memo: `${category}: ${description}`,
+            },
+          ],
+        });
+
+        if (cleanSource === '1-1001' && shift_id) {
+          AccountingService.recordCashMovement({
+            type: 'CASH_IN',
+            amount: cleanAmount,
+            reason: `[${category}] ${description}`,
+          });
+        }
+      }
+    })();
+
+    res.json({
+      success: true,
+      tx_no: txNo,
+      message: `${cleanType === 'EXPENSE' ? 'Pengeluaran' : 'Pemasukan'} berhasil dicatat dan masuk ke pembukuan.`,
+    });
+  } catch (err: any) {
+    console.error('Operational transaction error:', err);
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// ============================================================
+// 5.3 ANALISIS & PERINGKAT (STOK LIMIT, PRODUK, PELANGGAN, SUPPLIER)
+// ============================================================
+apiRouter.get('/reports/analytics', (req: Request, res: Response) => {
+  try {
+    const period = (req.query.period as string) || 'month';
+
+    // 1. Stok Menipis / Limit
+    const lowStock = db.prepare(`
+      SELECT p.id, p.sku, p.barcode, p.name, p.stock_quantity, p.min_stock_alert,
+             p.cost_price, p.selling_price, p.base_uom, c.name as category_name
+      FROM products p
+      LEFT JOIN categories c ON p.category_id = c.id
+      WHERE p.is_active = 1 AND p.stock_quantity <= p.min_stock_alert
+      ORDER BY p.stock_quantity ASC
+      LIMIT 100
+    `).all();
+
+    // 2. Peringkat Penjualan Produk
+    let dateFilter = '';
+    if (period === 'day') {
+      dateFilter = "AND date(o.created_at, 'localtime') = date('now', 'localtime')";
+    } else if (period === 'month') {
+      dateFilter = "AND strftime('%Y-%m', o.created_at, 'localtime') = strftime('%Y-%m', 'now', 'localtime')";
+    } else if (period === 'year') {
+      dateFilter = "AND strftime('%Y', o.created_at, 'localtime') = strftime('%Y', 'now', 'localtime')";
+    }
+
+    const topProducts = db.prepare(`
+      SELECT oi.item_name, p.sku, p.barcode,
+             SUM(oi.quantity) as total_sold_qty,
+             SUM(oi.subtotal) as total_revenue,
+             SUM(oi.subtotal - (oi.cost_price * oi.quantity)) as gross_profit
+      FROM order_items oi
+      JOIN orders o ON oi.order_id = o.id
+      LEFT JOIN products p ON oi.product_id = p.id
+      WHERE o.status = 'PAID' ${dateFilter}
+      GROUP BY oi.item_name
+      ORDER BY total_sold_qty DESC
+      LIMIT 50
+    `).all();
+
+    // 3. Peringkat Pelanggan
+    const topCustomers = db.prepare(`
+      SELECT c.id, c.name, c.phone, c.credit_limit, c.current_debt,
+             COUNT(o.id) as total_transactions,
+             COALESCE(SUM(o.grand_total), 0) as total_spent
+      FROM customers c
+      LEFT JOIN orders o ON o.customer_id = c.id AND o.status = 'PAID'
+      WHERE c.is_active = 1
+      GROUP BY c.id
+      ORDER BY total_spent DESC, total_transactions DESC
+      LIMIT 50
+    `).all();
+
+    // 4. Peringkat Supplier
+    const topSuppliers = db.prepare(`
+      SELECT s.id, s.name, s.phone, s.contact_person, s.current_debt,
+             COUNT(po.id) as total_orders,
+             COALESCE(SUM(po.total_amount), 0) as total_purchased
+      FROM suppliers s
+      LEFT JOIN purchase_orders po ON po.supplier_id = s.id AND po.status = 'RECEIVED'
+      WHERE s.is_active = 1
+      GROUP BY s.id
+      ORDER BY total_purchased DESC, s.current_debt DESC
+      LIMIT 50
+    `).all();
+
+    res.json({
+      period,
+      lowStock,
+      topProducts,
+      topCustomers,
+      topSuppliers,
+    });
+  } catch (err: any) {
+    console.error('Analytics error:', err);
+    res.status(500).json({ error: err.message });
   }
 });
 

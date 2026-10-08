@@ -2,7 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { 
   Wrench, Plus, Search, Filter, Phone, Smartphone, 
   CheckCircle, Clock, AlertTriangle, Printer, DollarSign, 
-  Calendar, Check, X, ShieldAlert, ArrowRight, Eye, ShieldCheck
+  Calendar, Check, X, ShieldAlert, ArrowRight, Eye, ShieldCheck,
+  MessageSquare, Send, ExternalLink, Copy
 } from 'lucide-react';
 import { ServiceOrder, ServiceStatus } from '../types';
 
@@ -50,6 +51,67 @@ export const ServicePage: React.FC = () => {
     text: '',
     title: '',
   });
+
+  // WhatsApp Notification State for "Siap Diambil"
+  const [waNotifyModal, setWaNotifyModal] = useState<{
+    isOpen: boolean;
+    service: ServiceOrder | null;
+    phone: string;
+    message: string;
+    copied: boolean;
+  }>({
+    isOpen: false,
+    service: null,
+    phone: '',
+    message: '',
+    copied: false,
+  });
+
+  const generateServiceReadyMessage = (service: ServiceOrder, finalCostOverride?: number) => {
+    const cost = finalCostOverride !== undefined ? finalCostOverride : (service.final_cost || service.estimated_cost || 0);
+    const dp = service.down_payment || 0;
+    const remaining = Math.max(0, cost - dp);
+
+    let msg = `Halo Kak *${service.customer_name}*,\n\n`;
+    msg += `Kabar baik dari *POS IPAY / GarudaTel*! Unit perbaikan gadget Anda telah selesai dikerjakan dan *SIAP DIAMBIL*:\n\n`;
+    msg += `🔖 *No. Servis*   : ${service.service_no}\n`;
+    msg += `📱 *Unit*         : ${service.device_brand_model}\n`;
+    msg += `🔧 *Kerusakan*    : ${service.issue_description}\n`;
+    if (service.technician_notes) {
+      msg += `📝 *Tindakan*     : ${service.technician_notes}\n`;
+    }
+    msg += `💰 *Total Biaya*  : Rp ${cost.toLocaleString('id-ID')}\n`;
+    if (dp > 0) {
+      msg += `💵 *DP Terbayar*  : Rp ${dp.toLocaleString('id-ID')}\n`;
+    }
+    msg += `💳 *Sisa Bayar*   : *Rp ${remaining.toLocaleString('id-ID')}*\n\n`;
+    msg += `Silakan datang ke toko untuk pengambilan unit dengan membawa tanda terima servis. Terima kasih! 🙏✨`;
+    return msg;
+  };
+
+  const handleOpenWaReadyNotification = (service: ServiceOrder, finalCostOverride?: number) => {
+    let cleanPhone = service.customer_phone.replace(/\D/g, '');
+    if (cleanPhone.startsWith('0')) {
+      cleanPhone = '62' + cleanPhone.slice(1);
+    } else if (!cleanPhone.startsWith('62') && cleanPhone.length > 0) {
+      cleanPhone = '62' + cleanPhone;
+    }
+
+    const msg = generateServiceReadyMessage(service, finalCostOverride);
+    setWaNotifyModal({
+      isOpen: true,
+      service,
+      phone: cleanPhone,
+      message: msg,
+      copied: false,
+    });
+  };
+
+  const handleSendWhatsAppNotification = () => {
+    const text = encodeURIComponent(waNotifyModal.message);
+    const url = waNotifyModal.phone ? `https://wa.me/${waNotifyModal.phone}?text=${text}` : `https://wa.me/?text=${text}`;
+    window.open(url, '_blank');
+  };
 
   const fetchServices = async () => {
     setLoading(true);
@@ -124,6 +186,10 @@ export const ServicePage: React.FC = () => {
 
   const handleUpdateStatus = async () => {
     if (!selectedForStatus) return;
+    const currentService = selectedForStatus;
+    const updatedStatus = statusForm.status;
+    const finalCostNum = statusForm.finalCost ? parseFloat(statusForm.finalCost) : currentService.final_cost;
+
     try {
       const res = await fetch(`/api/services/${selectedForStatus.id}/status`, {
         method: 'PUT',
@@ -138,6 +204,11 @@ export const ServicePage: React.FC = () => {
       if (res.ok && data.success) {
         setSelectedForStatus(null);
         fetchServices();
+
+        // If status changed to COMPLETED (Siap Diambil), trigger WhatsApp notification modal
+        if (updatedStatus === 'COMPLETED') {
+          handleOpenWaReadyNotification(currentService, finalCostNum);
+        }
       } else {
         alert(data.error || 'Gagal memperbarui status');
       }
@@ -429,21 +500,32 @@ export const ServicePage: React.FC = () => {
                       )}
 
                       {srv.status === 'COMPLETED' && (
-                        <button
-                          onClick={() => {
-                            setSelectedForPickup(srv);
-                            const rem = Math.max(0, srv.final_cost - srv.down_payment);
-                            setPickupForm({
-                              payment_method: 'CASH',
-                              cash_tendered: String(rem),
-                              notes: '',
-                            });
-                          }}
-                          className="py-2 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold flex items-center gap-1 cursor-pointer transition shadow-xs"
-                        >
-                          <DollarSign className="w-3.5 h-3.5" />
-                          <span>Serah Terima</span>
-                        </button>
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => handleOpenWaReadyNotification(srv)}
+                            title="Kirim Notifikasi WhatsApp Siap Diambil"
+                            className="p-2 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 transition cursor-pointer"
+                          >
+                            <MessageSquare className="w-4 h-4 text-emerald-600" />
+                          </button>
+
+                          <button
+                            onClick={() => {
+                              setSelectedForPickup(srv);
+                              const rem = Math.max(0, srv.final_cost - srv.down_payment);
+                              setPickupForm({
+                                payment_method: 'CASH',
+                                cash_tendered: String(rem),
+                                notes: '',
+                              });
+                            }}
+                            className="py-2 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold flex items-center gap-1 cursor-pointer transition shadow-xs"
+                          >
+                            <DollarSign className="w-3.5 h-3.5" />
+                            <span>Serah Terima</span>
+                          </button>
+                        </>
                       )}
                     </div>
                   </div>
@@ -834,6 +916,93 @@ export const ServicePage: React.FC = () => {
                 >
                   <Printer className="w-3.5 h-3.5" />
                   <span>Cetak thermal</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 5. WhatsApp Notification Modal for "Siap Diambil" */}
+      {waNotifyModal.isOpen && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl w-full max-w-lg shadow-2xl border border-slate-200 overflow-hidden animate-in fade-in">
+            <div className="bg-emerald-600 px-5 py-4 text-white flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-white/20 rounded-xl">
+                  <MessageSquare className="w-5 h-5 text-white" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-sm">Notifikasi Servis Siap Diambil</h3>
+                  <p className="text-[11px] text-emerald-100 font-mono">
+                    {waNotifyModal.service?.service_no} - {waNotifyModal.service?.customer_name}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setWaNotifyModal({ isOpen: false, service: null, phone: '', message: '', copied: false })}
+                className="w-7 h-7 rounded-full bg-white/20 hover:bg-white/30 text-white flex items-center justify-center cursor-pointer text-xs"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  Nomor WhatsApp Pelanggan:
+                </label>
+                <input
+                  type="text"
+                  value={waNotifyModal.phone}
+                  onChange={e => setWaNotifyModal(prev => ({ ...prev, phone: e.target.value }))}
+                  placeholder="Contoh: 628123456789"
+                  className="w-full px-3 py-2 rounded-xl border border-slate-300 font-mono text-xs font-bold text-slate-800 focus:outline-emerald-500"
+                />
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-xs font-bold text-slate-700">
+                    Preview Pesan Notifikasi WhatsApp:
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      navigator.clipboard.writeText(waNotifyModal.message);
+                      setWaNotifyModal(prev => ({ ...prev, copied: true }));
+                      setTimeout(() => setWaNotifyModal(prev => ({ ...prev, copied: false })), 2000);
+                    }}
+                    className="text-emerald-700 hover:text-emerald-800 text-[11px] font-bold flex items-center gap-1 bg-emerald-50 px-2 py-0.5 rounded cursor-pointer"
+                  >
+                    {waNotifyModal.copied ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3" />}
+                    <span>{waNotifyModal.copied ? 'Tersalin!' : 'Salin Pesan'}</span>
+                  </button>
+                </div>
+                <textarea
+                  rows={8}
+                  value={waNotifyModal.message}
+                  onChange={e => setWaNotifyModal(prev => ({ ...prev, message: e.target.value }))}
+                  className="w-full p-3 bg-slate-50 border border-slate-300 rounded-xl text-xs font-sans leading-relaxed focus:outline-emerald-500"
+                />
+              </div>
+
+              <div className="flex gap-2.5 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setWaNotifyModal({ isOpen: false, service: null, phone: '', message: '', copied: false })}
+                  className="flex-1 py-2.5 rounded-xl border border-slate-300 text-xs font-bold text-slate-600 hover:bg-slate-50 cursor-pointer"
+                >
+                  Nanti Saja
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSendWhatsAppNotification}
+                  className="flex-1 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-extrabold flex items-center justify-center gap-2 shadow-md shadow-emerald-600/20 cursor-pointer"
+                >
+                  <Send className="w-4 h-4" />
+                  <span>Kirim via WhatsApp</span>
+                  <ExternalLink className="w-3.5 h-3.5" />
                 </button>
               </div>
             </div>

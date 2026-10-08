@@ -715,36 +715,111 @@ export class PPOBService {
         };
       }
 
-      // Catat Mutasi Kas Ganda di Akuntansi POS (Double-entry)
-      const sourceAcc = params.sourceAccount || '1-1001';
+      // Catat tiket deposit ke database lokal dengan status PENDING
+      try {
+        db.prepare(`
+          INSERT OR REPLACE INTO ppob_deposits (ref_id, amount, channel, source_account, status, payment_instruction, notes)
+          VALUES (?, ?, ?, ?, 'PENDING', ?, ?)
+        `).run(
+          apiData.ref_id,
+          amount,
+          params.channel,
+          params.sourceAccount || '1-1001',
+          typeof apiData === 'object' ? JSON.stringify(apiData) : String(apiData),
+          params.notes || null
+        );
+      } catch (dbErr) {
+        console.warn('Gagal mencatat ppob_deposits table:', dbErr);
+      }
+
+      return {
+        success: true,
+        data: apiData,
+        message: apiData.message || 'Tiket deposit berhasil dibuat (PENDING). Saldo akan otomatis bertambah setelah transfer diverifikasi oleh admin ipay.my.id.',
+      };
+    } catch (err: any) {
+      console.error('[PPOB Deposit Error]', err);
+      return { success: false, message: `Gagal memproses deposit: ${err.message}` };
+    }
+  }
+
+  /**
+   * Mengambil riwayat tiket deposit PPOB
+   */
+  static getDepositHistory() {
+    try {
+      return db.prepare('SELECT * FROM ppob_deposits ORDER BY id DESC LIMIT 50').all();
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Verifikasi dan setujui tiket deposit PPOB (Menambah saldo 1-1003 & mencatat mutasi kas ganda)
+   */
+  static async approveDeposit(refId: string): Promise<{ success: boolean; message: string }> {
+    try {
+      const dep = db.prepare('SELECT * FROM ppob_deposits WHERE ref_id = ?').get(refId) as any;
+      if (!dep) return { success: false, message: 'Tiket deposit tidak ditemukan' };
+      if (dep.status === 'APPROVED') return { success: false, message: 'Tiket deposit sudah disetujui sebelumnya' };
+      if (dep.status === 'REJECTED') return { success: false, message: 'Tiket deposit ini telah ditolak' };
+
+      // Update status tiket menjadi APPROVED
+      db.prepare(`
+        UPDATE ppob_deposits
+        SET status = 'APPROVED', verified_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `).run(dep.id);
+
+      // Catat Mutasi Kas Ganda di Akuntansi POS (Double-entry) HANYA setelah diverifikasi
+      const sourceAcc = dep.source_account || '1-1001';
       AccountingService.createJournalEntry({
         reference_type: 'SHIFT_ADJUSTMENT',
-        reference_id: apiData.ref_id,
-        description: `Top-up Saldo Deposit PPOB (ipay.my.id) via ${params.channel}`,
+        reference_id: dep.ref_id,
+        description: `Top-up Saldo Deposit PPOB (ipay.my.id) via ${dep.channel} [Disetujui]`,
         lines: [
           {
             account_code: '1-1003',
-            debit: amount,
+            debit: dep.amount,
             credit: 0,
-            memo: `Deposit Saldo PPOB Ref ${apiData.ref_id}`,
+            memo: `Deposit Saldo PPOB Ref ${dep.ref_id} - Terverifikasi`,
           },
           {
             account_code: sourceAcc,
             debit: 0,
-            credit: amount,
-            memo: `Pengeluaran Kas/Bank untuk Top-up Saldo PPOB`,
+            credit: dep.amount,
+            memo: `Pengeluaran Kas/Bank untuk Top-up Saldo PPOB Ref ${dep.ref_id}`,
           },
         ],
       });
 
       return {
         success: true,
-        data: apiData,
-        message: apiData.message || 'Tiket deposit berhasil dibuat dan mutasi kas berhasil dicatat di pembukuan POS.',
+        message: `Tiket ${dep.ref_id} sebesar Rp ${dep.amount.toLocaleString('id-ID')} berhasil disetujui. Saldo akun deposit PPOB (1-1003) kini resmi bertambah.`,
       };
     } catch (err: any) {
-      console.error('[PPOB Deposit Error]', err);
-      return { success: false, message: `Gagal memproses deposit: ${err.message}` };
+      return { success: false, message: `Gagal verifikasi deposit: ${err.message}` };
+    }
+  }
+
+  /**
+   * Tolak tiket deposit PPOB
+   */
+  static rejectDeposit(refId: string, reason?: string): { success: boolean; message: string } {
+    try {
+      const dep = db.prepare('SELECT * FROM ppob_deposits WHERE ref_id = ?').get(refId) as any;
+      if (!dep) return { success: false, message: 'Tiket deposit tidak ditemukan' };
+      if (dep.status === 'APPROVED') return { success: false, message: 'Tiket deposit yang sudah disetujui tidak dapat ditolak' };
+
+      db.prepare(`
+        UPDATE ppob_deposits
+        SET status = 'REJECTED', notes = COALESCE(?, notes), verified_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `).run(reason || 'Ditolak oleh admin/operator', dep.id);
+
+      return { success: true, message: `Tiket deposit ${refId} berhasil ditolak` };
+    } catch (err: any) {
+      return { success: false, message: `Gagal menolak deposit: ${err.message}` };
     }
   }
 

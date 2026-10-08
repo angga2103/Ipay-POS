@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { 
-  Zap, Key, ShieldCheck, RefreshCw, Sliders, CheckCircle2, 
+  Zap, Key, ShieldCheck, RefreshCw, Sliders, CheckCircle2, CheckCircle, XCircle,
   AlertTriangle, Copy, Play, Loader2, ArrowRight, Download, Package,
   Wallet, CreditCard, History, Settings, Search, Check, ExternalLink,
   Eye, EyeOff, MessageSquare, Phone, ArrowUpRight, Clock, Shield
@@ -69,6 +69,11 @@ export const PPOBManagerPage: React.FC = () => {
   const [depositTicket, setDepositTicket] = useState<any>(null);
   const [depositError, setDepositError] = useState<string | null>(null);
 
+  // Deposit History & Verification State
+  const [depositHistory, setDepositHistory] = useState<any[]>([]);
+  const [loadingDepositHistory, setLoadingDepositHistory] = useState(false);
+  const [processingRefId, setProcessingRefId] = useState<string | null>(null);
+
   // Simulator Webhook Tester
   const [simRefId, setSimRefId] = useState('');
   const [simStatus, setSimStatus] = useState<'success' | 'failed'>('success');
@@ -87,7 +92,68 @@ export const PPOBManagerPage: React.FC = () => {
     fetchTransactions();
     fetchProductsCount();
     fetchDepositInfo();
+    fetchDepositHistory();
   }, []);
+
+  const fetchDepositHistory = async () => {
+    setLoadingDepositHistory(true);
+    try {
+      const res = await fetch('/api/ppob/deposit/history');
+      const data = await res.json();
+      if (Array.isArray(data)) {
+        setDepositHistory(data);
+      }
+    } catch (err) {
+      console.error('Failed to load deposit history:', err);
+    } finally {
+      setLoadingDepositHistory(false);
+    }
+  };
+
+  const handleApproveDeposit = async (refId: string) => {
+    if (!confirm(`Verifikasi & Setujui deposit ${refId}?\nSaldo PPOB dan mutasi kas 1-1003 akan ditambahkan ke pembukuan.`)) return;
+    setProcessingRefId(refId);
+    try {
+      const res = await fetch(`/api/ppob/deposit/${encodeURIComponent(refId)}/approve`, { method: 'POST' });
+      const data = await res.json();
+      if (data.success) {
+        alert(`Deposit ${refId} BERHASIL diverifikasi! Saldo iPay dan Buku Kas telah bertambah.`);
+        fetchDepositHistory();
+        fetchDepositInfo();
+        refreshBalance();
+      } else {
+        alert(`Gagal: ${data.message || 'Error'}`);
+      }
+    } catch (err: any) {
+      alert(`Error: ${err.message}`);
+    } finally {
+      setProcessingRefId(null);
+    }
+  };
+
+  const handleRejectDeposit = async (refId: string) => {
+    const reason = prompt(`Masukkan alasan penolakan deposit ${refId}:`, 'Bukti transfer tidak valid / dana belum masuk');
+    if (reason === null) return;
+    setProcessingRefId(refId);
+    try {
+      const res = await fetch(`/api/ppob/deposit/${encodeURIComponent(refId)}/reject`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason })
+      });
+      const data = await res.json();
+      if (data.success) {
+        alert(`Deposit ${refId} berhasil ditolak.`);
+        fetchDepositHistory();
+      } else {
+        alert(`Gagal: ${data.message || 'Error'}`);
+      }
+    } catch (err: any) {
+      alert(`Error: ${err.message}`);
+    } finally {
+      setProcessingRefId(null);
+    }
+  };
 
   const fetchDepositInfo = async () => {
     setLoadingDepositInfo(true);
@@ -152,7 +218,8 @@ export const PPOBManagerPage: React.FC = () => {
       if (data.success) {
         setDepositTicket(data);
         fetchDepositInfo();
-        refreshBalance();
+        fetchDepositHistory();
+        // NOTE: Saldo TIDAK otomatis bertambah saat tiket dibuat. Menunggu persetujuan admin ipay.my.id!
       } else {
         setDepositError(data.message || 'Gagal membuat tiket deposit');
       }
@@ -1069,13 +1136,13 @@ export const PPOBManagerPage: React.FC = () => {
                       </div>
                     </div>
 
-                    <div className="p-3 bg-blue-50 border border-blue-200 rounded-xl text-xs space-y-1">
-                      <div className="font-bold text-blue-900 flex items-center gap-1">
-                        <CheckCircle className="w-3.5 h-3.5 text-blue-600" />
-                        <span>Pembukuan Kas Otomatis:</span>
+                    <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs space-y-1">
+                      <div className="font-bold text-amber-900 flex items-center gap-1">
+                        <Clock className="w-3.5 h-3.5 text-amber-600" />
+                        <span>Menunggu Verifikasi Persetujuan:</span>
                       </div>
-                      <p className="text-[11px] text-blue-800">
-                        Jurnal pengeluaran kas telah dicatat di Buku Besar POS: Kas Toko dikreditkan dan Akun 1-1003 (Deposit Saldo PPOB) didebitkan.
+                      <p className="text-[11px] text-amber-800">
+                        Tiket deposit berstatus <strong>PENDING</strong>. Saldo PPOB dan pembukuan kas 1-1003 baru akan ditambahkan setelah diverifikasi dan disetujui oleh admin atau gateway iPay.
                       </p>
                     </div>
 
@@ -1113,7 +1180,7 @@ export const PPOBManagerPage: React.FC = () => {
                   </div>
 
                   <p className="text-xs text-slate-600 leading-relaxed">
-                    Setiap permohonan deposit di sistem Web POS ini terhubung langsung ke gateway <span className="font-bold text-slate-800">ipay.my.id</span> dan otomatis dicatat ke jurnal keuangan minimarket.
+                    Setiap permohonan deposit di sistem Web POS ini terhubung langsung ke gateway <span className="font-bold text-slate-800">ipay.my.id</span> dan otomatis dicatat ke jurnal keuangan minimarket setelah disetujui.
                   </p>
 
                   <div className="space-y-2.5 text-xs">
@@ -1148,7 +1215,7 @@ export const PPOBManagerPage: React.FC = () => {
                       <div>
                         <div className="font-bold text-slate-800">Konfirmasi via WhatsApp</div>
                         <div className="text-[11px] text-slate-500 mt-0.5">
-                          Kirim bukti transfer ke WhatsApp admin. Saldo akan masuk otomatis setelah divalidasi.
+                          Kirim bukti transfer ke WhatsApp admin. Saldo akan masuk otomatis setelah disetujui oleh admin iPay.
                         </div>
                       </div>
                     </div>
@@ -1160,6 +1227,120 @@ export const PPOBManagerPage: React.FC = () => {
                 </div>
               )}
             </div>
+          </div>
+
+          {/* Card 3: Riwayat & Status Verifikasi Tiket Deposit */}
+          <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <History className="w-4 h-4 text-blue-600" />
+                <h2 className="font-extrabold text-sm text-slate-800">
+                  Riwayat & Status Verifikasi Tiket Deposit
+                </h2>
+              </div>
+              <button
+                type="button"
+                onClick={fetchDepositHistory}
+                disabled={loadingDepositHistory}
+                className="text-xs text-blue-600 hover:text-blue-800 font-bold flex items-center gap-1 cursor-pointer self-start sm:self-auto"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${loadingDepositHistory ? 'animate-spin' : ''}`} />
+                <span>Segarkan Riwayat</span>
+              </button>
+            </div>
+
+            {loadingDepositHistory ? (
+              <div className="py-8 text-center text-xs text-slate-400">
+                <RefreshCw className="w-5 h-5 animate-spin mx-auto mb-2 text-blue-600" />
+                <span>Memuat riwayat deposit...</span>
+              </div>
+            ) : depositHistory.length === 0 ? (
+              <div className="py-8 text-center text-xs text-slate-400">
+                Belum ada tiket deposit yang dibuat.
+              </div>
+            ) : (
+              <div className="border border-slate-200 rounded-xl overflow-x-auto">
+                <table className="w-full text-left text-xs border-collapse">
+                  <thead className="bg-slate-50 text-[10.5px] font-bold text-slate-500 uppercase border-b border-slate-200">
+                    <tr>
+                      <th className="py-2.5 px-3">Waktu Permohonan</th>
+                      <th className="py-2.5 px-3">No. Referensi (Ref ID)</th>
+                      <th className="py-2.5 px-3">Saluran Transfer</th>
+                      <th className="py-2.5 px-3">Sumber Kas</th>
+                      <th className="py-2.5 px-3 text-right">Nominal (Rp)</th>
+                      <th className="py-2.5 px-3 text-center">Status</th>
+                      <th className="py-2.5 px-3">Keterangan</th>
+                      {canDeposit && <th className="py-2.5 px-3 text-center">Verifikasi / Aksi</th>}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 font-medium">
+                    {depositHistory.map((dep: any) => (
+                      <tr key={dep.id} className="hover:bg-slate-50/80 transition">
+                        <td className="py-2.5 px-3 text-slate-500 font-mono text-[11px]">
+                          {new Date(dep.created_at).toLocaleString('id-ID')}
+                        </td>
+                        <td className="py-2.5 px-3 font-mono font-bold text-blue-700">
+                          {dep.ref_id}
+                        </td>
+                        <td className="py-2.5 px-3 font-semibold text-slate-800">
+                          {dep.payment_channel}
+                        </td>
+                        <td className="py-2.5 px-3 font-mono text-[11px] text-slate-600">
+                          {dep.source_account}
+                        </td>
+                        <td className="py-2.5 px-3 text-right font-mono font-black text-slate-900">
+                          Rp {dep.amount?.toLocaleString('id-ID')}
+                        </td>
+                        <td className="py-2.5 px-3 text-center">
+                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                            dep.status === 'APPROVED' || dep.status === 'SUCCESS'
+                              ? 'bg-emerald-100 text-emerald-800'
+                              : dep.status === 'PENDING'
+                              ? 'bg-amber-100 text-amber-800 animate-pulse'
+                              : 'bg-rose-100 text-rose-800'
+                          }`}>
+                            {dep.status === 'PENDING' ? '⏳ Menunggu Persetujuan' : dep.status}
+                          </span>
+                        </td>
+                        <td className="py-2.5 px-3 text-slate-500 text-[11px]">
+                          {dep.notes || '-'}
+                        </td>
+                        {canDeposit && (
+                          <td className="py-2.5 px-3 text-center">
+                            {dep.status === 'PENDING' ? (
+                              <div className="flex items-center justify-center gap-1.5">
+                                <button
+                                  type="button"
+                                  onClick={() => handleApproveDeposit(dep.ref_id)}
+                                  disabled={processingRefId === dep.ref_id}
+                                  className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-bold text-[10.5px] transition cursor-pointer flex items-center gap-1 shadow-xs"
+                                  title="Verifikasi persetujuan admin iPay dan tambahkan saldo"
+                                >
+                                  <Check className="w-3 h-3" />
+                                  <span>Setujui</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleRejectDeposit(dep.ref_id)}
+                                  disabled={processingRefId === dep.ref_id}
+                                  className="px-2 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-lg font-bold text-[10.5px] transition cursor-pointer flex items-center gap-1"
+                                  title="Tolak tiket deposit ini"
+                                >
+                                  <X className="w-3 h-3" />
+                                  <span>Tolak</span>
+                                </button>
+                              </div>
+                            ) : (
+                              <span className="text-slate-400 text-[11px]">-</span>
+                            )}
+                          </td>
+                        )}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         </div>
       )}

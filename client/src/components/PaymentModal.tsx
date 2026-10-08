@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { 
   Banknote, QrCode, CreditCard, Users, Layers, 
-  Check, X, AlertCircle, Loader2, ArrowRight 
+  Check, X, AlertCircle, Loader2, ArrowRight, UserPlus 
 } from 'lucide-react';
 import { useCart } from '../context/CartContext';
 import { useShift } from '../context/ShiftContext';
@@ -28,6 +28,53 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose, onS
   const [notes, setNotes] = useState<string>('');
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string>('');
+
+  // New Customer Inline Form for Kasbon
+  const [showAddCustomer, setShowAddCustomer] = useState(false);
+  const [newCustName, setNewCustName] = useState('');
+  const [newCustPhone, setNewCustPhone] = useState('');
+  const [newCustCreditLimit, setNewCustCreditLimit] = useState('500000');
+  const [newCustAddress, setNewCustAddress] = useState('');
+  const [savingCustomer, setSavingCustomer] = useState(false);
+  const [addCustError, setAddCustError] = useState('');
+
+  const handleCreateCustomer = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newCustName.trim()) {
+      setAddCustError('Nama pelanggan wajib diisi');
+      return;
+    }
+    setSavingCustomer(true);
+    setAddCustError('');
+    try {
+      const res = await fetch('/api/customers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: newCustName.trim(),
+          phone: newCustPhone.trim(),
+          address: newCustAddress.trim(),
+          credit_limit: parseFloat(newCustCreditLimit) || 0,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success && data.customer) {
+        setCustomers(prev => [data.customer, ...prev]);
+        setSelectedCustomerId(data.customer.id);
+        setShowAddCustomer(false);
+        setNewCustName('');
+        setNewCustPhone('');
+        setNewCustCreditLimit('500000');
+        setNewCustAddress('');
+      } else {
+        setAddCustError(data.error || 'Gagal menambahkan pelanggan');
+      }
+    } catch (err: any) {
+      setAddCustError(err.message || 'Error');
+    } finally {
+      setSavingCustomer(false);
+    }
+  };
 
   useEffect(() => {
     if (isOpen) {
@@ -321,10 +368,124 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose, onS
                 <label className="block text-xs font-bold text-slate-700">
                   Pilih Pelanggan Kasbon (Wajib Terdaftar)
                 </label>
-                <span className="text-[11px] text-slate-500 font-medium">
-                  {customers.length} Pelanggan
-                </span>
+                <div className="flex items-center gap-2">
+                  <span className="text-[11px] text-slate-500 font-medium hidden sm:inline">
+                    {customers.length} Pelanggan
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowAddCustomer(!showAddCustomer);
+                      setAddCustError('');
+                    }}
+                    className="px-2.5 py-1 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-lg text-xs font-bold flex items-center gap-1 border border-blue-200 cursor-pointer transition"
+                  >
+                    <UserPlus className="w-3.5 h-3.5" />
+                    <span>{showAddCustomer ? 'Batal Tambah' : '+ Pelanggan Baru'}</span>
+                  </button>
+                </div>
               </div>
+
+              {/* Inline Add Customer Form */}
+              {showAddCustomer && (
+                <div className="bg-blue-50/70 border border-blue-200 rounded-2xl p-3.5 space-y-3 animate-in fade-in">
+                  <div className="flex items-center justify-between border-b border-blue-200/60 pb-2">
+                    <span className="text-xs font-extrabold text-blue-900 flex items-center gap-1.5">
+                      <UserPlus className="w-4 h-4 text-blue-600" />
+                      <span>Registrasi Pelanggan Baru untuk Kasbon</span>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setShowAddCustomer(false)}
+                      className="text-slate-400 hover:text-slate-600 text-xs cursor-pointer"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+
+                  {addCustError && (
+                    <div className="p-2 bg-rose-50 border border-rose-200 text-rose-700 rounded-xl text-xs flex items-center gap-1.5 font-medium">
+                      <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                      <span>{addCustError}</span>
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                        Nama Pelanggan <span className="text-rose-500">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="Contoh: Pak Budi"
+                        value={newCustName}
+                        onChange={e => setNewCustName(e.target.value)}
+                        className="w-full px-3 py-1.5 rounded-xl border border-slate-300 bg-white text-xs font-semibold focus:outline-blue-500"
+                        required
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                        No. HP / WhatsApp
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="Contoh: 08123456789"
+                        value={newCustPhone}
+                        onChange={e => setNewCustPhone(e.target.value)}
+                        className="w-full px-3 py-1.5 rounded-xl border border-slate-300 bg-white font-mono text-xs focus:outline-blue-500"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                        Batas Plafon Kasbon (Rp)
+                      </label>
+                      <input
+                        type="number"
+                        min="0"
+                        step="50000"
+                        value={newCustCreditLimit}
+                        onChange={e => setNewCustCreditLimit(e.target.value)}
+                        className="w-full px-3 py-1.5 rounded-xl border border-slate-300 bg-white font-mono text-xs font-bold text-slate-800 focus:outline-blue-500"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                        Alamat / Catatan
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="Contoh: RT 03 / RW 02"
+                        value={newCustAddress}
+                        onChange={e => setNewCustAddress(e.target.value)}
+                        className="w-full px-3 py-1.5 rounded-xl border border-slate-300 bg-white text-xs focus:outline-blue-500"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex justify-end gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => setShowAddCustomer(false)}
+                      className="px-3 py-1.5 rounded-xl border border-slate-300 bg-white text-slate-700 text-xs font-bold hover:bg-slate-50 cursor-pointer"
+                    >
+                      Batal
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleCreateCustomer}
+                      disabled={savingCustomer}
+                      className="px-4 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-xs disabled:opacity-50"
+                    >
+                      {savingCustomer ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+                      <span>Simpan & Pilih Pelanggan</span>
+                    </button>
+                  </div>
+                </div>
+              )}
 
               {/* Search Customer */}
               <input

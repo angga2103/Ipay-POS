@@ -11,6 +11,8 @@ interface AuthContextType {
   loginWithPin: (pin: string) => Promise<boolean>;
   logout: () => void;
   switchUser: (userId: number) => void;
+  setAuthenticatedUser: (user: User, token?: string) => void;
+  refreshUsers: () => Promise<void>;
   verifySupervisorPin: (pin: string) => Promise<boolean>;
   hasRole: (roles: UserRole[]) => boolean;
 }
@@ -116,10 +118,26 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
+  const refreshUsers = async () => {
+    try {
+      const res = await fetch('/api/users');
+      const data = await res.json();
+      if (Array.isArray(data)) setUsers(data);
+    } catch (err) {
+      console.error('Failed to reload users:', err);
+    }
+  };
+
   const logout = () => {
     setCurrentUser(null);
     localStorage.removeItem('pos_user');
     localStorage.removeItem('pos_auth_token');
+  };
+
+  const setAuthenticatedUser = (user: User, token?: string) => {
+    setCurrentUser(user);
+    localStorage.setItem('pos_user', JSON.stringify(user));
+    if (token) localStorage.setItem('pos_auth_token', token);
   };
 
   const switchUser = (userId: number) => {
@@ -161,6 +179,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         loginWithPin,
         logout,
         switchUser,
+        setAuthenticatedUser,
+        refreshUsers,
         verifySupervisorPin,
         hasRole
       }}

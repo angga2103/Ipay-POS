@@ -323,6 +323,58 @@ CREATE TABLE IF NOT EXISTS stock_opname_items (
   variance_value REAL NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS ppob_deposits (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ref_id TEXT UNIQUE NOT NULL,
+  amount REAL NOT NULL,
+  channel TEXT NOT NULL,
+  source_account TEXT NOT NULL DEFAULT '1-1001',
+  status TEXT NOT NULL DEFAULT 'PENDING' CHECK(status IN ('PENDING', 'APPROVED', 'REJECTED')),
+  payment_instruction TEXT,
+  notes TEXT,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  verified_at DATETIME
+);
+
+CREATE TABLE IF NOT EXISTS sales_returns (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  return_no TEXT UNIQUE NOT NULL,
+  order_id INTEGER NOT NULL REFERENCES orders(id),
+  invoice_no TEXT NOT NULL,
+  customer_id INTEGER REFERENCES customers(id),
+  total_refund REAL NOT NULL,
+  refund_method TEXT NOT NULL CHECK(refund_method IN ('CASH', 'KASBON_REDUCTION')),
+  reason TEXT NOT NULL,
+  cashier_id INTEGER REFERENCES users(id),
+  shift_id INTEGER REFERENCES shifts(id),
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS sales_return_items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  return_id INTEGER NOT NULL REFERENCES sales_returns(id) ON DELETE CASCADE,
+  product_id INTEGER NOT NULL REFERENCES products(id),
+  item_name TEXT NOT NULL,
+  quantity REAL NOT NULL,
+  unit_price REAL NOT NULL,
+  subtotal REAL NOT NULL,
+  cost_price REAL NOT NULL,
+  restock_inventory INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS operational_transactions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  tx_no TEXT UNIQUE NOT NULL,
+  type TEXT NOT NULL CHECK(type IN ('EXPENSE', 'INCOME')),
+  category TEXT NOT NULL,
+  description TEXT NOT NULL,
+  amount REAL NOT NULL,
+  payment_source TEXT NOT NULL CHECK(payment_source IN ('1-1001', '1-1002')),
+  cashier_id INTEGER REFERENCES users(id),
+  shift_id INTEGER REFERENCES shifts(id),
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Indices for Fast Lookups
 CREATE INDEX IF NOT EXISTS idx_products_barcode ON products(barcode);
 CREATE INDEX IF NOT EXISTS idx_product_units_barcode ON product_units(barcode);
@@ -332,3 +384,7 @@ CREATE INDEX IF NOT EXISTS idx_order_items_order ON order_items(order_id);
 CREATE INDEX IF NOT EXISTS idx_journal_lines_journal ON journal_lines(journal_id);
 CREATE INDEX IF NOT EXISTS idx_journal_lines_account ON journal_lines(account_code);
 CREATE INDEX IF NOT EXISTS idx_ppob_products_category ON ppob_products(category_code);
+CREATE INDEX IF NOT EXISTS idx_sales_returns_order ON sales_returns(order_id);
+CREATE INDEX IF NOT EXISTS idx_sales_returns_invoice ON sales_returns(invoice_no);
+CREATE INDEX IF NOT EXISTS idx_op_tx_type ON operational_transactions(type);
+CREATE INDEX IF NOT EXISTS idx_ppob_deposits_ref ON ppob_deposits(ref_id);

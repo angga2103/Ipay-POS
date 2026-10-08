@@ -3,17 +3,24 @@ import {
   BookOpen, TrendingUp, Layers, CheckCircle2, 
   ArrowRight, Download, RefreshCw, Scale, HelpCircle, 
   PlusCircle, Sparkles, DollarSign, X, Check, FileText,
-  Truck, Users, Package, AlertCircle, ArrowUpRight, ShieldCheck
+  Truck, Users, Package, AlertCircle, ArrowUpRight, ShieldCheck,
+  Wallet, Tag
 } from 'lucide-react';
 import { ProfitAndLossReport, JournalEntry, ChartOfAccount, Supplier, Customer, OpeningBalanceStatus, InventoryValuation } from '../types';
+import { CashInOutModal } from '../components/CashInOutModal';
 
 export const AccountingPage: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<'pl' | 'journals' | 'ledger' | 'trial_balance' | 'coa'>('pl');
+  const [activeTab, setActiveTab] = useState<'pl' | 'journals' | 'ledger' | 'trial_balance' | 'coa' | 'operational'>('pl');
   const [plData, setPlData] = useState<ProfitAndLossReport | null>(null);
   const [journals, setJournals] = useState<JournalEntry[]>([]);
   const [trialBalance, setTrialBalance] = useState<{ accounts: any[]; totalDebit: number; totalCredit: number; isBalanced: boolean } | null>(null);
   const [coaList, setCoaList] = useState<ChartOfAccount[]>([]);
   const [loading, setLoading] = useState(false);
+
+  // Operational Transactions (Pengeluaran Umum & Pemasukan Lain-lain)
+  const [operationalList, setOperationalList] = useState<any[]>([]);
+  const [loadingOperational, setLoadingOperational] = useState(false);
+  const [isCashInOutModalOpen, setIsCashInOutModalOpen] = useState(false);
 
   // General Ledger per-account state
   const [selectedLedgerAccount, setSelectedLedgerAccount] = useState<string>('1-1001');
@@ -46,9 +53,23 @@ export const AccountingPage: React.FC = () => {
   // Educational Guide Modal State
   const [isGuideModalOpen, setIsGuideModalOpen] = useState(false);
 
+  const fetchOperational = async () => {
+    setLoadingOperational(true);
+    try {
+      const res = await fetch('/api/operational-transactions');
+      const data = await res.json();
+      setOperationalList(Array.isArray(data) ? data : []);
+    } catch (err) {
+      console.error('Failed to load operational transactions:', err);
+    } finally {
+      setLoadingOperational(false);
+    }
+  };
+
   const fetchAccountingData = async () => {
     setLoading(true);
     try {
+      fetchOperational();
       const [resPl, resJournals, resTb, resCoa, resSync, resVal, resSup, resCust] = await Promise.all([
         fetch('/api/accounting/profit-loss'),
         fetch('/api/accounting/journals?limit=50'),
@@ -440,6 +461,16 @@ export const AccountingPage: React.FC = () => {
           <Layers className="w-3.5 h-3.5" />
           <span>Bagan Akun (COA)</span>
         </button>
+
+        <button
+          onClick={() => setActiveTab('operational')}
+          className={`px-3 py-2 rounded-xl transition cursor-pointer flex items-center gap-1.5 whitespace-nowrap ${
+            activeTab === 'operational' ? 'bg-blue-600 text-white shadow-xs' : 'text-slate-600 hover:bg-slate-100'
+          }`}
+        >
+          <Wallet className="w-3.5 h-3.5" />
+          <span>Pengeluaran & Pemasukan Lain</span>
+        </button>
       </div>
 
       {/* Tab 1: Segregated & Combined Profit & Loss (P&L) */}
@@ -546,6 +577,122 @@ export const AccountingPage: React.FC = () => {
               </div>
             </div>
           </div>
+
+          {/* Formal Structured Financial Statement (Laporan Laba Rugi Komprehensif) */}
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
+            <div className="p-4 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
+              <div>
+                <h3 className="font-extrabold text-sm text-slate-800">
+                  Laporan Laba Rugi Standar (Income Statement)
+                </h3>
+                <p className="text-xs text-slate-500">
+                  Format baku laporan keuangan akuntansi ritel & produk digital
+                </p>
+              </div>
+              <span className="px-2.5 py-1 rounded-full text-[11px] font-bold bg-slate-200 text-slate-700">
+                Standar Akuntansi POS
+              </span>
+            </div>
+
+            <div className="p-5 font-sans text-xs space-y-4">
+              {/* I. PENDAPATAN OPERASIONAL */}
+              <div className="space-y-1.5">
+                <div className="font-bold text-slate-900 uppercase text-[11px] tracking-wide border-b border-slate-200 pb-1">
+                  I. Pendapatan Operasional Usaha
+                </div>
+                <div className="flex justify-between pl-4 text-slate-600 py-0.5">
+                  <span>4-1001 Penjualan Barang Ritel Toko</span>
+                  <span className="font-mono font-medium">Rp {plData.retail.revenue.toLocaleString('id-ID')}</span>
+                </div>
+                <div className="flex justify-between pl-4 text-slate-600 py-0.5">
+                  <span>4-1002 Penjualan Produk Digital PPOB (iPay)</span>
+                  <span className="font-mono font-medium">Rp {plData.ppob.revenue.toLocaleString('id-ID')}</span>
+                </div>
+                <div className="flex justify-between font-bold text-slate-800 pt-1 border-t border-dashed border-slate-200 pl-2">
+                  <span>Total Pendapatan Operasional</span>
+                  <span className="font-mono">Rp {plData.combined.totalRevenue.toLocaleString('id-ID')}</span>
+                </div>
+              </div>
+
+              {/* II. HARGA POKOK PENJUALAN */}
+              <div className="space-y-1.5 pt-2">
+                <div className="font-bold text-slate-900 uppercase text-[11px] tracking-wide border-b border-slate-200 pb-1">
+                  II. Beban Pokok Penjualan (HPP)
+                </div>
+                <div className="flex justify-between pl-4 text-slate-600 py-0.5">
+                  <span>5-1001 Harga Pokok Penjualan Persediaan Ritel</span>
+                  <span className="font-mono font-medium">Rp {plData.retail.cogs.toLocaleString('id-ID')}</span>
+                </div>
+                <div className="flex justify-between pl-4 text-slate-600 py-0.5">
+                  <span>5-1002 Beban Modal / HPP Transaksi PPOB</span>
+                  <span className="font-mono font-medium">Rp {plData.ppob.cogs.toLocaleString('id-ID')}</span>
+                </div>
+                <div className="flex justify-between font-bold text-slate-800 pt-1 border-t border-dashed border-slate-200 pl-2">
+                  <span>Total Beban Pokok Penjualan (HPP)</span>
+                  <span className="font-mono text-rose-700">(Rp {plData.combined.totalCOGS.toLocaleString('id-ID')})</span>
+                </div>
+              </div>
+
+              {/* III. LABA KOTOR */}
+              <div className="p-3 bg-blue-50/70 border border-blue-200 rounded-xl flex items-center justify-between font-bold text-blue-950">
+                <div>
+                  <span className="text-xs uppercase tracking-wide">III. Laba Kotor Usaha (Gross Profit)</span>
+                  <span className="text-[11px] text-blue-700 font-normal ml-2">Margin: {plData.combined.marginPercent.toFixed(1)}%</span>
+                </div>
+                <span className="text-sm font-mono font-extrabold text-blue-800">
+                  Rp {(plData.combined.totalRevenue - plData.combined.totalCOGS).toLocaleString('id-ID')}
+                </span>
+              </div>
+
+              {/* IV. BEBAN OPERASIONAL */}
+              <div className="space-y-1.5 pt-1">
+                <div className="font-bold text-slate-900 uppercase text-[11px] tracking-wide border-b border-slate-200 pb-1">
+                  IV. Beban Operasional & Toko
+                </div>
+                <div className="flex justify-between pl-4 text-slate-600 py-0.5">
+                  <span>6-1001 Beban Operasional Umum (Listrik, Air, ATK, Kebersihan)</span>
+                  <span className="font-mono font-medium">
+                    Rp {(plData.operatingExpenses || 0).toLocaleString('id-ID')}
+                  </span>
+                </div>
+                <div className="flex justify-between font-bold text-slate-800 pt-1 border-t border-dashed border-slate-200 pl-2">
+                  <span>Total Beban Operasional</span>
+                  <span className="font-mono text-rose-700">(Rp {(plData.operatingExpenses || 0).toLocaleString('id-ID')})</span>
+                </div>
+              </div>
+
+              {/* V. PENDAPATAN LAIN-LAIN */}
+              <div className="space-y-1.5 pt-1">
+                <div className="font-bold text-slate-900 uppercase text-[11px] tracking-wide border-b border-slate-200 pb-1">
+                  V. Pendapatan (Beban) Lain-lain
+                </div>
+                <div className="flex justify-between pl-4 text-slate-600 py-0.5">
+                  <span>4-1003 Pendapatan Lain-lain (Jual Kardus Bekas, Jasa Titip, dsb)</span>
+                  <span className="font-mono font-medium text-emerald-700">
+                    Rp {operationalList
+                      .filter(op => op.type === 'INCOME')
+                      .reduce((acc, curr) => acc + (curr.amount || 0), 0)
+                      .toLocaleString('id-ID')}
+                  </span>
+                </div>
+              </div>
+
+              {/* VI. LABA BERSIH */}
+              <div className="p-4 bg-emerald-50 border-2 border-emerald-400 rounded-xl flex items-center justify-between text-emerald-950 font-bold">
+                <div>
+                  <span className="text-sm uppercase tracking-wider font-extrabold">
+                    VI. Laba Bersih Berjalan (Net Income)
+                  </span>
+                  <p className="text-[11px] text-emerald-700 font-normal mt-0.5">
+                    Laba Kotor dikurangi Beban Operasional ditambah Pendapatan Lain-lain
+                  </p>
+                </div>
+                <span className="text-xl font-mono font-black text-emerald-700">
+                  Rp {plData.combined.netProfit.toLocaleString('id-ID')}
+                </span>
+              </div>
+            </div>
+          </div>
         </div>
       )}
 
@@ -605,6 +752,37 @@ export const AccountingPage: React.FC = () => {
                   </div>
                   <div className="text-xl font-mono font-black text-slate-900 mt-0.5">
                     Rp {ledgerData.finalBalance.toLocaleString('id-ID')}
+                  </div>
+                </div>
+              </div>
+
+              {/* 4 Summary Metric Cards */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                <div className="p-3 rounded-xl bg-slate-50 border border-slate-200">
+                  <span className="text-[10.5px] font-bold text-slate-500 uppercase block">Saldo Normal</span>
+                  <div className="text-sm font-bold text-slate-800 mt-0.5">
+                    {ledgerData.account.normal_balance}
+                  </div>
+                </div>
+
+                <div className="p-3 rounded-xl bg-blue-50 border border-blue-200">
+                  <span className="text-[10.5px] font-bold text-blue-700 uppercase block">Total Debit</span>
+                  <div className="text-sm font-mono font-black text-blue-800 mt-0.5">
+                    Rp {ledgerData.entries.reduce((sum: number, e: any) => sum + (e.debit || 0), 0).toLocaleString('id-ID')}
+                  </div>
+                </div>
+
+                <div className="p-3 rounded-xl bg-indigo-50 border border-indigo-200">
+                  <span className="text-[10.5px] font-bold text-indigo-700 uppercase block">Total Kredit</span>
+                  <div className="text-sm font-mono font-black text-indigo-800 mt-0.5">
+                    Rp {ledgerData.entries.reduce((sum: number, e: any) => sum + (e.credit || 0), 0).toLocaleString('id-ID')}
+                  </div>
+                </div>
+
+                <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200">
+                  <span className="text-[10.5px] font-bold text-emerald-700 uppercase block">Total Mutasi</span>
+                  <div className="text-sm font-mono font-black text-emerald-800 mt-0.5">
+                    {ledgerData.entries.length} Entri
                   </div>
                 </div>
               </div>
@@ -809,6 +987,132 @@ export const AccountingPage: React.FC = () => {
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {/* Tab 5: Pengeluaran Umum & Pemasukan Lain-lain */}
+      {activeTab === 'operational' && (
+        <div className="bg-white rounded-2xl border border-slate-200 shadow-xs p-4 md:p-5 space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-100">
+            <div>
+              <h2 className="font-extrabold text-sm text-slate-800">
+                Pencatatan Pengeluaran Umum & Pemasukan Lain-lain
+              </h2>
+              <p className="text-xs text-slate-500">
+                Kelola kas masuk/keluar non-penjualan utama (misal: jual kardus bekas, beli kresek/lakban, listrik)
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={fetchOperational}
+                disabled={loadingOperational}
+                className="p-2 border border-slate-200 rounded-xl hover:bg-slate-50 text-slate-700 cursor-pointer"
+                title="Muat ulang transaksi operasional"
+              >
+                <RefreshCw className={`w-4 h-4 ${loadingOperational ? 'animate-spin' : ''}`} />
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setIsCashInOutModalOpen(true)}
+                className="px-3.5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold text-xs shadow-xs flex items-center gap-1.5 cursor-pointer transition"
+              >
+                <PlusCircle className="w-4 h-4" />
+                <span>+ Catat Mutasi Kas</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Quick Summary Cards */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div className="p-3.5 rounded-xl bg-rose-50 border border-rose-200">
+              <span className="text-[11px] font-bold text-rose-800 uppercase block">Total Pengeluaran Umum</span>
+              <div className="text-xl font-mono font-black text-rose-700 mt-1">
+                Rp {operationalList
+                  .filter(o => o.type === 'EXPENSE')
+                  .reduce((sum, o) => sum + (o.amount || 0), 0)
+                  .toLocaleString('id-ID')}
+              </div>
+            </div>
+
+            <div className="p-3.5 rounded-xl bg-emerald-50 border border-emerald-200">
+              <span className="text-[11px] font-bold text-emerald-800 uppercase block">Total Pemasukan Lain-lain</span>
+              <div className="text-xl font-mono font-black text-emerald-700 mt-1">
+                Rp {operationalList
+                  .filter(o => o.type === 'INCOME')
+                  .reduce((sum, o) => sum + (o.amount || 0), 0)
+                  .toLocaleString('id-ID')}
+              </div>
+            </div>
+
+            <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200">
+              <span className="text-[11px] font-bold text-slate-600 uppercase block">Total Transaksi Operasional</span>
+              <div className="text-xl font-mono font-black text-slate-900 mt-1">
+                {operationalList.length} Transaksi
+              </div>
+            </div>
+          </div>
+
+          {/* Table */}
+          {loadingOperational ? (
+            <div className="py-12 text-center text-xs text-slate-400">
+              <RefreshCw className="w-5 h-5 animate-spin mx-auto mb-2 text-blue-600" />
+              <span>Memuat transaksi operasional...</span>
+            </div>
+          ) : operationalList.length === 0 ? (
+            <div className="py-12 text-center text-xs text-slate-400">
+              Belum ada transaksi pengeluaran umum atau pemasukan lain yang dicatat.
+            </div>
+          ) : (
+            <div className="border border-slate-200 rounded-xl overflow-x-auto">
+              <table className="w-full text-left text-xs border-collapse">
+                <thead className="bg-slate-50 text-[10.5px] font-bold text-slate-500 uppercase border-b border-slate-200">
+                  <tr>
+                    <th className="py-2.5 px-3">Tanggal & Waktu</th>
+                    <th className="py-2.5 px-3">Tipe</th>
+                    <th className="py-2.5 px-3">Kategori</th>
+                    <th className="py-2.5 px-3">Keterangan / Rincian Dinamis</th>
+                    <th className="py-2.5 px-3">Akun Kas Toko</th>
+                    <th className="py-2.5 px-3 text-right">Nominal (Rp)</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 font-medium">
+                  {operationalList.map(op => (
+                    <tr key={op.id} className="hover:bg-slate-50/80 transition">
+                      <td className="py-2.5 px-3 font-mono text-[11px] text-slate-500">
+                        {new Date(op.created_at).toLocaleString('id-ID')}
+                      </td>
+                      <td className="py-2.5 px-3">
+                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                          op.type === 'INCOME'
+                            ? 'bg-emerald-100 text-emerald-800'
+                            : 'bg-rose-100 text-rose-800'
+                        }`}>
+                          {op.type === 'INCOME' ? 'Pemasukan Lain' : 'Pengeluaran'}
+                        </span>
+                      </td>
+                      <td className="py-2.5 px-3 font-bold text-slate-800">
+                        {op.category}
+                      </td>
+                      <td className="py-2.5 px-3 text-slate-700">
+                        {op.description}
+                      </td>
+                      <td className="py-2.5 px-3 font-mono text-[11px] text-slate-500">
+                        {op.account_code} {op.account_code === '1-1001' ? '(Kas Laci)' : '(Bank Toko)'}
+                      </td>
+                      <td className={`py-2.5 px-3 text-right font-mono font-black ${
+                        op.type === 'INCOME' ? 'text-emerald-600' : 'text-rose-600'
+                      }`}>
+                        {op.type === 'INCOME' ? '+' : '-'}Rp {op.amount?.toLocaleString('id-ID')}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       )}
 
@@ -1137,6 +1441,16 @@ export const AccountingPage: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* Cash In / Out (Pengeluaran Umum & Pemasukan Lain-lain) Modal */}
+      <CashInOutModal
+        isOpen={isCashInOutModalOpen}
+        onClose={() => setIsCashInOutModalOpen(false)}
+        onSuccess={() => {
+          fetchOperational();
+          fetchAccountingData();
+        }}
+      />
     </div>
   );
 };

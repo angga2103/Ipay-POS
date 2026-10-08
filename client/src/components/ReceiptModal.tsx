@@ -104,28 +104,29 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
     const ppobItems = currentItems?.filter((it: any) => it.item_type === 'PPOB') || [];
     const retailItems = currentItems?.filter((it: any) => it.item_type === 'RETAIL') || [];
 
-    let text = `🧾 *STRUK TRANSAKSI DIGITAL*\n`;
-    text += `*POS IPAY - TOKO BERKAH SEJAHTERA*\n`;
+    let text = `🧾 *STRUK TRANSAKSI RESMI*\n`;
+    text += `*POS IPAY - SISTEM KASIR & DIGITAL*\n`;
     text += `─────────────────────────\n`;
     text += `No. Struk : *${invoiceNo || order?.invoice_no || 'TRX-' + Date.now()}*\n`;
     text += `Waktu     : ${order?.created_at ? new Date(order.created_at).toLocaleString('id-ID') : new Date().toLocaleString('id-ID')}\n`;
     if (order?.cashier_name) text += `Kasir     : ${order.cashier_name}\n`;
+    if (order?.customer_name) text += `Pelanggan : ${order.customer_name}\n`;
     text += `─────────────────────────\n\n`;
 
     if (ppobItems.length > 0) {
-      text += `*📱 DETAIL LAYANAN PPOB & DIGITAL:*\n`;
+      text += `*📱 LAYANAN PPOB & PRODUK DIGITAL:*\n`;
       for (const it of ppobItems) {
         text += `• *${it.item_name}*\n`;
         if (it.ppob_target_no) text += `  No. Tujuan : *${it.ppob_target_no}*\n`;
-        if (it.ppob_customer_name) text += `  Nama       : ${it.ppob_customer_name}\n`;
-        text += `  Harga      : Rp ${Number(it.subtotal || it.unit_price || 0).toLocaleString('id-ID')}\n`;
+        if (it.ppob_customer_name) text += `  Atas Nama  : ${it.ppob_customer_name}\n`;
+        text += `  Tagihan/Harga : Rp ${Number(it.subtotal || it.unit_price || 0).toLocaleString('id-ID')}\n`;
 
-        // Token / SN / Keterangan Kuota Highlight Box
+        // Token / SN Highlight Framed Box
         if (it.ppob_sn_token) {
-          text += `  ━━━━━━━━━━━━━━━━━━━━━━━\n`;
-          text += `  🔑 *TOKEN / SN / KETERANGAN:*\n`;
-          text += `  *${it.ppob_sn_token}*\n`;
-          text += `  ━━━━━━━━━━━━━━━━━━━━━━━\n`;
+          text += `  ┌───────────────────────┐\n`;
+          text += `  │ 🔑 *TOKEN / SERIAL NUMBER:*  │\n`;
+          text += `  │ *${it.ppob_sn_token}*\n`;
+          text += `  └───────────────────────┘\n`;
         } else if (it.ppob_status === 'PENDING') {
           text += `  ⏳ _Status: Sedang Diproses Provider (Pending)_\n`;
         }
@@ -134,7 +135,7 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
     }
 
     if (retailItems.length > 0) {
-      text += `*🛍️ PRODUK RITEL / TOKO:*\n`;
+      text += `*🛍️ PRODUK RITEL & TOKO:*\n`;
       for (const it of retailItems) {
         text += `• ${it.item_name} (${it.quantity}x @ Rp ${Number(it.unit_price).toLocaleString('id-ID')})\n`;
         if (it.imei_sn) text += `  IMEI/SN: ${it.imei_sn}\n`;
@@ -145,11 +146,15 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
 
     text += `─────────────────────────\n`;
     text += `*TOTAL BAYAR : Rp ${Number(order?.grand_total || 0).toLocaleString('id-ID')}*\n`;
-    text += `Metode Bayar: ${order?.payment_method || 'CASH'}\n`;
-    text += `Status      : SUKSES / LUNAS ✅\n`;
+    text += `Metode Bayar : ${order?.payment_method || 'CASH'}\n`;
+    if (order?.cash_tendered) {
+      text += `Diterima     : Rp ${Number(order.cash_tendered).toLocaleString('id-ID')}\n`;
+      text += `Kembalian    : Rp ${Number(order.change_amount || 0).toLocaleString('id-ID')}\n`;
+    }
+    text += `Status       : *LUNAS ✅*\n`;
     text += `─────────────────────────\n`;
-    text += `Terima kasih telah berbelanja!\n`;
-    text += `_Simpan pesan ini sebagai bukti transaksi resmi yang sah._`;
+    text += `Terima kasih atas kepercayaan Anda!\n`;
+    text += `_Simpan pesan ini sebagai bukti pembayaran resmi._`;
     return text;
   };
 
@@ -284,14 +289,20 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
               </div>
 
               {/* Thermal Paper Preview */}
-              <div className="flex justify-center">
+              <div className={`flex justify-center ${paperWidth === '80mm' ? 'paper-80mm' : ''}`}>
                 <div
                   id="thermal-receipt-print-area"
-                  className={`bg-white p-5 shadow-sm border border-slate-300 text-slate-900 rounded-sm font-mono text-[11px] leading-relaxed whitespace-pre-wrap ${
+                  className={`bg-white p-5 shadow-md border border-slate-300 text-slate-900 rounded-xs font-mono text-[11px] leading-relaxed whitespace-pre-wrap transition-all select-text relative ${
                     paperWidth === '80mm' ? 'w-[80mm] max-w-[340px]' : 'w-[58mm] max-w-[280px]'
                   }`}
+                  style={{
+                    boxShadow: '0 4px 20px -2px rgba(0,0,0,0.1), 0 2px 6px -1px rgba(0,0,0,0.06)',
+                  }}
                 >
                   {receiptText}
+                  <div className="mt-4 pt-2 border-t border-dashed border-slate-300 text-center text-[10px] text-slate-400 print:hidden select-none">
+                    - - - - Batas Kertas Thermal - - - -
+                  </div>
                 </div>
               </div>
             </div>

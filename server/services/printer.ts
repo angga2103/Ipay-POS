@@ -398,4 +398,81 @@ export class ThermalPrinterService {
 
     return out.join('\n');
   }
+
+  /**
+   * Format Nota Retur Penjualan (Sales Return Receipt)
+   */
+  static formatReturnReceiptText(data: {
+    return_no: string;
+    invoice_no: string;
+    created_at: string;
+    cashier_name?: string;
+    customer_name?: string;
+    reason: string;
+    refund_method: string;
+    total_refund: number;
+    items: Array<{
+      item_name: string;
+      quantity: number;
+      unit_price: number;
+      subtotal: number;
+    }>;
+  }, paperWidth: '58mm' | '80mm' = '58mm'): string {
+    const width = paperWidth === '80mm' ? 48 : 32;
+    const getSetting = (key: string, def = '') => {
+      const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as any;
+      return row ? row.value : def;
+    };
+
+    const storeName = getSetting('store_name', 'MINIMARKET IPAY BERKAH');
+    const storeAddress = getSetting('store_address', 'Jl. Ahmad Yani No. 88');
+    const storePhone = getSetting('store_phone', '0812-3456-7890');
+
+    const center = (text: string) => {
+      if (text.length >= width) return text.slice(0, width);
+      const pad = Math.floor((width - text.length) / 2);
+      return ' '.repeat(pad) + text;
+    };
+    const line = '-'.repeat(width);
+    const doubleLine = '='.repeat(width);
+
+    const formatRow = (left: string, right: string) => {
+      const space = width - left.length - right.length;
+      if (space <= 0) return left.slice(0, width - right.length - 1) + ' ' + right;
+      return left + ' '.repeat(space) + right;
+    };
+
+    const formatCurrency = (amount: number) => 'Rp ' + amount.toLocaleString('id-ID');
+
+    const out: string[] = [];
+    out.push(center(storeName.toUpperCase()));
+    if (storeAddress) out.push(center(storeAddress));
+    if (storePhone) out.push(center(`Telp: ${storePhone}`));
+    out.push(doubleLine);
+    out.push(center('*** NOTA RETUR PENJUALAN ***'));
+    out.push(line);
+
+    out.push(formatRow('No. Retur', data.return_no));
+    out.push(formatRow('Ref. Faktur', data.invoice_no));
+    out.push(formatRow('Waktu', new Date(data.created_at).toLocaleString('id-ID')));
+    if (data.cashier_name) out.push(formatRow('Kasir', data.cashier_name));
+    if (data.customer_name) out.push(formatRow('Pelanggan', data.customer_name));
+    out.push(line);
+
+    out.push('BARANG DIRETUR:');
+    for (const it of data.items) {
+      out.push(it.item_name);
+      out.push(formatRow(`  ${it.quantity} x ${formatCurrency(it.unit_price)}`, formatCurrency(it.subtotal)));
+    }
+    out.push(line);
+
+    out.push(formatRow('TOTAL PENGEMBALIAN', formatCurrency(data.total_refund)));
+    out.push(formatRow('Metode Pengembalian', data.refund_method === 'CASH' ? 'Tunai (Kas Laci)' : 'Potong Hutang Kasbon'));
+    out.push(line);
+    out.push(`Alasan: ${data.reason}`);
+    out.push(doubleLine);
+    out.push(center('Barang retur telah diverifikasi'));
+    out.push(center('dan tercatat di sistem pembukuan.'));
+    return out.join('\n');
+  }
 }
