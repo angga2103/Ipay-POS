@@ -11,8 +11,24 @@ CREATE TABLE IF NOT EXISTS users (
   name TEXT NOT NULL,
   role TEXT NOT NULL CHECK(role IN ('owner', 'supervisor', 'cashier')),
   pin TEXT,
+  email TEXT,
+  phone TEXT,
+  is_active INTEGER NOT NULL DEFAULT 1,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
+
+-- OTP Verifikasi Email (Login, Registrasi, Reset Password)
+CREATE TABLE IF NOT EXISTS email_otp_codes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  email TEXT NOT NULL,
+  tenant_id TEXT NOT NULL DEFAULT 'default',
+  otp_code TEXT NOT NULL,
+  purpose TEXT NOT NULL CHECK(purpose IN ('LOGIN', 'REGISTER', 'RESET_PASSWORD')),
+  expires_at DATETIME NOT NULL,
+  is_used INTEGER NOT NULL DEFAULT 0,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_otp_email_purpose ON email_otp_codes(email, purpose, is_used);
 
 -- Settings & Configuration
 CREATE TABLE IF NOT EXISTS settings (

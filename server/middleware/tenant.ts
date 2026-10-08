@@ -47,6 +47,7 @@ export function tenantMiddleware(req: Request, res: Response, next: NextFunction
   const isPublicRoute = 
     path.startsWith('/auth/') || 
     path === '/tenant/info' || 
+    path === '/tenant/list' || 
     path === '/ppob/webhook' || 
     path === '/users';
 

@@ -91,3 +91,68 @@ export function verifySecret(secret: string, storedHash: string): boolean {
   // 2. Fallback untuk data awal plaintext (seperti 'admin123', '123456')
   return secret === storedHash;
 }
+
+export interface OtpSessionPayload {
+  tenantId: string;
+  userId?: number;
+  email: string;
+  purpose: 'LOGIN' | 'REGISTER' | 'RESET_PASSWORD';
+  storeName?: string;
+  extra?: any;
+  exp: number; // unix timestamp in seconds
+}
+
+/**
+ * Buat token sesi OTP sementara (15 menit)
+ */
+export function createOtpSessionToken(data: {
+  tenantId: string;
+  userId?: number;
+  email: string;
+  purpose: 'LOGIN' | 'REGISTER' | 'RESET_PASSWORD';
+  storeName?: string;
+  extra?: any;
+}): string {
+  const header = { alg: 'HS256', typ: 'OTP' };
+  const exp = Math.floor(Date.now() / 1000) + (15 * 60); // 15 menit
+  const payload: OtpSessionPayload = {
+    ...data,
+    exp,
+  };
+
+  const b64Header = Buffer.from(JSON.stringify(header)).toString('base64url');
+  const b64Payload = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  const signature = crypto.createHmac('sha256', JWT_SECRET).update(`${b64Header}.${b64Payload}`).digest('base64url');
+
+  return `${b64Header}.${b64Payload}.${signature}`;
+}
+
+/**
+ * Verifikasi token sesi OTP sementara
+ */
+export function verifyOtpSessionToken(token: string): OtpSessionPayload | null {
+  if (!token || typeof token !== 'string') return null;
+  const parts = token.split('.');
+  if (parts.length !== 3) return null;
+
+  const [b64Header, b64Payload, signature] = parts;
+  const expectedSig = crypto.createHmac('sha256', JWT_SECRET).update(`${b64Header}.${b64Payload}`).digest('base64url');
+
+  if (signature.length !== expectedSig.length || !crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expectedSig))) {
+    return null;
+  }
+
+  try {
+    const payloadStr = Buffer.from(b64Payload, 'base64url').toString('utf8');
+    const payload: OtpSessionPayload = JSON.parse(payloadStr);
+
+    const nowSec = Math.floor(Date.now() / 1000);
+    if (payload.exp && payload.exp < nowSec) {
+      return null;
+    }
+
+    return payload;
+  } catch {
+    return null;
+  }
+}

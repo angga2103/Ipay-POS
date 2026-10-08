@@ -1,8 +1,8 @@
 import { Router, Request, Response } from 'express';
 import crypto from 'crypto';
 import db from '../db/database';
-import { getTenantDatabase, tenantContext } from '../db/tenant';
-import { createAuthToken, verifySecret } from '../utils/auth-token';
+import { getTenantDatabase, tenantContext, getAllTenantSummaries, sanitizeTenantId, defaultDb, getAllTenantIds } from '../db/tenant';
+import { createAuthToken, verifySecret, hashSecret, createOtpSessionToken, verifyOtpSessionToken } from '../utils/auth-token';
 import { AccountingService } from '../services/accounting';
 import { PPOBService } from '../services/ppob';
 import { InventoryService } from '../services/inventory';
@@ -10,8 +10,18 @@ import { ShiftService } from '../services/shift';
 import { ThermalPrinterService } from '../services/printer';
 import { ServiceDeskService } from '../services/service-desk';
 import { BackupService } from '../services/backup';
+import { MailerService } from '../services/mailer';
 
 export const apiRouter = Router();
+
+function maskEmail(email: string): string {
+  if (!email || !email.includes('@')) return email || '***';
+  const [userPart, domain] = email.split('@');
+  if (userPart.length <= 2) {
+    return `${userPart[0]}***@${domain}`;
+  }
+  return `${userPart[0]}***${userPart[userPart.length - 1]}@${domain}`;
+}
 
 // Ensure held_bills table exists
 db.exec(`
@@ -28,6 +38,481 @@ db.exec(`
 // ============================================================
 // 1. AUTH & USERS & RBAC OPERATOR MANAGEMENT
 // ============================================================
+
+// Daftar Seluruh Tenant / Toko untuk Pemilihan Cepat di Halaman Login
+apiRouter.get('/tenant/list', (_req: Request, res: Response) => {
+  try {
+    const list = getAllTenantSummaries();
+    res.json({ tenants: list });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Step 1 Login Mandiri: Cek Kredensial Toko + Username/Email + Password, lalu Kirim OTP ke Email
+apiRouter.post('/auth/login-step1', async (req: Request, res: Response) => {
+  try {
+    const { tenantId, username, password } = req.body;
+    if (!username || !password) {
+      return res.status(400).json({ error: 'Username/Email dan kata sandi wajib diisi' });
+    }
+
+    const tId = sanitizeTenantId(tenantId || req.tenantId || 'default');
+    const targetDb = getTenantDatabase(tId);
+
+    const cleanInput = username.trim().toLowerCase();
+    const user = targetDb.prepare(`
+      SELECT id, username, password, name, role, pin, email, phone, is_active 
+      FROM users 
+      WHERE LOWER(username) = ? OR (email IS NOT NULL AND LOWER(email) = ?)
+      LIMIT 1
+    `).get(cleanInput, cleanInput) as any;
+
+    if (!user || !verifySecret(password, user.password)) {
+      return res.status(401).json({ error: 'ID Toko, Username/Email, atau kata sandi tidak cocok' });
+    }
+    if (user.is_active === 0) {
+      return res.status(403).json({ error: 'Akun operator ini telah dinonaktifkan oleh Administrator' });
+    }
+
+    // Auto-associate email jika pengguna login menggunakan email dan data email sebelumnya kosong
+    let userEmail = user.email;
+    if (!userEmail && cleanInput.includes('@')) {
+      targetDb.prepare('UPDATE users SET email = ? WHERE id = ?').run(cleanInput, user.id);
+      userEmail = cleanInput;
+    } else if (!userEmail) {
+      userEmail = `${user.username}@toko.local`;
+      targetDb.prepare('UPDATE users SET email = ? WHERE id = ?').run(userEmail, user.id);
+    }
+
+    const storeNameRow = targetDb.prepare("SELECT value FROM settings WHERE key = 'store_name'").get() as any;
+    const storeName = storeNameRow?.value || (tId === 'default' ? 'Toko Utama' : `Toko ${tId}`);
+
+    const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+
+    targetDb.prepare(`
+      INSERT INTO email_otp_codes (email, tenant_id, otp_code, purpose, expires_at)
+      VALUES (?, ?, ?, 'LOGIN', ?)
+    `).run(userEmail, tId, otpCode, expiresAt);
+
+    try {
+      defaultDb.prepare(`
+        INSERT INTO email_otp_codes (email, tenant_id, otp_code, purpose, expires_at)
+        VALUES (?, ?, ?, 'LOGIN', ?)
+      `).run(userEmail, tId, otpCode, expiresAt);
+    } catch {}
+
+    const mailResult = await MailerService.sendOtpEmail({
+      to: userEmail,
+      otpCode,
+      purpose: 'LOGIN',
+      storeName,
+      userName: user.name,
+    });
+
+    const tempSessionToken = createOtpSessionToken({
+      tenantId: tId,
+      userId: user.id,
+      email: userEmail,
+      purpose: 'LOGIN',
+      storeName,
+    });
+
+    res.json({
+      success: true,
+      requiresOtp: true,
+      tempSessionToken,
+      maskedEmail: maskEmail(userEmail),
+      tenantId: tId,
+      storeName,
+      simulated: mailResult.simulated,
+      devOtp: mailResult.simulated ? otpCode : undefined,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Step 2 Login Mandiri: Verifikasi Kode OTP 6-Digit & Terbitkan Token Akses JWT
+apiRouter.post('/auth/login-verify-otp', (req: Request, res: Response) => {
+  try {
+    const { tempSessionToken, otpCode } = req.body;
+    if (!tempSessionToken || !otpCode) {
+      return res.status(400).json({ error: 'Token sesi dan kode OTP wajib diisi' });
+    }
+
+    const payload = verifyOtpSessionToken(tempSessionToken);
+    if (!payload || payload.purpose !== 'LOGIN' || !payload.userId) {
+      return res.status(400).json({ error: 'Sesi OTP tidak valid atau telah kedaluwarsa. Silakan login kembali.' });
+    }
+
+    const targetDb = getTenantDatabase(payload.tenantId);
+    const cleanOtp = String(otpCode).trim();
+
+    let otpRecord = targetDb.prepare(`
+      SELECT id, expires_at, is_used FROM email_otp_codes
+      WHERE email = ? AND tenant_id = ? AND otp_code = ? AND purpose = 'LOGIN' AND is_used = 0
+      ORDER BY id DESC LIMIT 1
+    `).get(payload.email, payload.tenantId, cleanOtp) as any;
+
+    if (!otpRecord) {
+      otpRecord = defaultDb.prepare(`
+        SELECT id, expires_at, is_used FROM email_otp_codes
+        WHERE email = ? AND otp_code = ? AND purpose = 'LOGIN' AND is_used = 0
+        ORDER BY id DESC LIMIT 1
+      `).get(payload.email, cleanOtp) as any;
+    }
+
+    if (!otpRecord) {
+      return res.status(400).json({ error: 'Kode OTP salah atau telah digunakan' });
+    }
+
+    if (new Date(otpRecord.expires_at).getTime() < Date.now()) {
+      return res.status(400).json({ error: 'Kode OTP telah kedaluwarsa. Silakan minta kode baru.' });
+    }
+
+    targetDb.prepare('UPDATE email_otp_codes SET is_used = 1 WHERE id = ?').run(otpRecord.id);
+    try { defaultDb.prepare('UPDATE email_otp_codes SET is_used = 1 WHERE id = ?').run(otpRecord.id); } catch {}
+
+    const user = targetDb.prepare(`
+      SELECT id, username, name, role, email, phone, is_active FROM users WHERE id = ?
+    `).get(payload.userId) as any;
+
+    if (!user || user.is_active === 0) {
+      return res.status(403).json({ error: 'Akun operator tidak aktif' });
+    }
+
+    const token = createAuthToken({
+      tenantId: payload.tenantId,
+      userId: user.id,
+      username: user.username,
+      role: user.role,
+    });
+
+    res.json({
+      success: true,
+      token,
+      tenantId: payload.tenantId,
+      user: {
+        id: user.id,
+        username: user.username,
+        name: user.name,
+        role: user.role,
+        email: user.email,
+        phone: user.phone,
+      },
+      storeName: payload.storeName,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Step 1 Registrasi Toko Baru: Kirim Kode OTP Verifikasi ke Email Calon Pemilik
+apiRouter.post('/auth/register-send-otp', async (req: Request, res: Response) => {
+  try {
+    const { storeName, ownerName, email } = req.body;
+    if (!storeName || !ownerName || !email) {
+      return res.status(400).json({ error: 'Nama toko, nama pemilik, dan email wajib diisi' });
+    }
+
+    const cleanEmail = email.trim().toLowerCase();
+    if (!cleanEmail.includes('@') || !cleanEmail.includes('.')) {
+      return res.status(400).json({ error: 'Format email tidak valid' });
+    }
+
+    const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+
+    defaultDb.prepare(`
+      INSERT INTO email_otp_codes (email, tenant_id, otp_code, purpose, expires_at)
+      VALUES (?, 'register', ?, 'REGISTER', ?)
+    `).run(cleanEmail, otpCode, expiresAt);
+
+    const mailResult = await MailerService.sendOtpEmail({
+      to: cleanEmail,
+      otpCode,
+      purpose: 'REGISTER',
+      storeName: storeName.trim(),
+      userName: ownerName.trim(),
+    });
+
+    res.json({
+      success: true,
+      maskedEmail: maskEmail(cleanEmail),
+      simulated: mailResult.simulated,
+      devOtp: mailResult.simulated ? otpCode : undefined,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Step 2 Registrasi Toko Baru: Verifikasi OTP, Buat Database Tenant Baru & Auto Login
+apiRouter.post('/auth/register-complete', async (req: Request, res: Response) => {
+  try {
+    const { storeName, ownerName, email, phone, password, otpCode } = req.body;
+    if (!storeName || !ownerName || !email || !password || !otpCode) {
+      return res.status(400).json({ error: 'Semua field wajib diisi' });
+    }
+    if (password.length < 6) {
+      return res.status(400).json({ error: 'Kata sandi minimal 6 karakter' });
+    }
+
+    const cleanEmail = email.trim().toLowerCase();
+    const cleanOtp = String(otpCode).trim();
+
+    const otpRecord = defaultDb.prepare(`
+      SELECT id, expires_at, is_used FROM email_otp_codes
+      WHERE email = ? AND otp_code = ? AND purpose = 'REGISTER' AND is_used = 0
+      ORDER BY id DESC LIMIT 1
+    `).get(cleanEmail, cleanOtp) as any;
+
+    if (!otpRecord) {
+      return res.status(400).json({ error: 'Kode OTP verifikasi pendaftaran salah atau telah digunakan' });
+    }
+    if (new Date(otpRecord.expires_at).getTime() < Date.now()) {
+      return res.status(400).json({ error: 'Kode OTP telah kedaluwarsa. Silakan minta kode baru.' });
+    }
+
+    defaultDb.prepare('UPDATE email_otp_codes SET is_used = 1 WHERE id = ?').run(otpRecord.id);
+
+    // Buat slug tenant ID dari nama toko
+    let baseSlug = storeName.trim().toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '') || 'toko';
+    
+    // Pastikan tidak duplikat dengan toko yang sudah ada
+    const existingTenants = getAllTenantIds();
+    if (existingTenants.includes(baseSlug)) {
+      baseSlug = `${baseSlug}-${Math.floor(100 + Math.random() * 900)}`;
+    }
+
+    const newTenantDb = getTenantDatabase(baseSlug, storeName.trim());
+
+    // Update settings toko
+    const upsertSetting = newTenantDb.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)');
+    upsertSetting.run('store_name', storeName.trim());
+    upsertSetting.run('tenant_id', baseSlug);
+    if (phone) upsertSetting.run('store_phone', phone.trim());
+    upsertSetting.run('store_email', cleanEmail);
+
+    // Buat akun Owner di database toko baru
+    let ownerUser = newTenantDb.prepare("SELECT id FROM users WHERE role = 'owner' LIMIT 1").get() as any;
+    if (ownerUser) {
+      newTenantDb.prepare(`
+        UPDATE users 
+        SET username = ?, name = ?, email = ?, phone = ?, password = ?
+        WHERE id = ?
+      `).run(cleanEmail, ownerName.trim(), cleanEmail, phone?.trim() || null, hashSecret(password), ownerUser.id);
+    } else {
+      newTenantDb.prepare(`
+        INSERT INTO users (username, password, name, role, pin, email, phone, is_active)
+        VALUES (?, ?, ?, 'owner', ?, ?, ?, 1)
+      `).run(cleanEmail, hashSecret(password), ownerName.trim(), hashSecret('112233'), cleanEmail, phone?.trim() || null);
+      ownerUser = newTenantDb.prepare("SELECT id FROM users WHERE role = 'owner' LIMIT 1").get() as any;
+    }
+
+    const token = createAuthToken({
+      tenantId: baseSlug,
+      userId: ownerUser.id,
+      username: cleanEmail,
+      role: 'owner',
+    });
+
+    res.json({
+      success: true,
+      token,
+      tenantId: baseSlug,
+      user: {
+        id: ownerUser.id,
+        username: cleanEmail,
+        name: ownerName.trim(),
+        role: 'owner',
+        email: cleanEmail,
+        phone: phone?.trim(),
+      },
+      storeName: storeName.trim(),
+      message: `Toko "${storeName}" berhasil didaftarkan dan siap digunakan!`,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Step 1 Lupa Password: Kirim Kode OTP Reset ke Email Terdaftar
+apiRouter.post('/auth/forgot-password', async (req: Request, res: Response) => {
+  try {
+    const { tenantId, email } = req.body;
+    if (!email) {
+      return res.status(400).json({ error: 'Email wajib diisi' });
+    }
+
+    const cleanEmail = email.trim().toLowerCase();
+    const tId = sanitizeTenantId(tenantId || 'default');
+    let targetDb = getTenantDatabase(tId);
+    let user = targetDb.prepare(`
+      SELECT id, username, name, email FROM users
+      WHERE (email IS NOT NULL AND LOWER(email) = ?) OR LOWER(username) = ?
+    `).get(cleanEmail, cleanEmail) as any;
+
+    let resolvedTenantId = tId;
+
+    // Jika tidak ditemukan di tenant default/pilihan, cari di tenant lain
+    if (!user) {
+      const allTenants = getAllTenantIds();
+      for (const otherTId of allTenants) {
+        if (otherTId === tId) continue;
+        const otherDb = getTenantDatabase(otherTId);
+        const match = otherDb.prepare(`
+          SELECT id, username, name, email FROM users
+          WHERE (email IS NOT NULL AND LOWER(email) = ?) OR LOWER(username) = ?
+        `).get(cleanEmail, cleanEmail) as any;
+        if (match) {
+          user = match;
+          targetDb = otherDb;
+          resolvedTenantId = otherTId;
+          break;
+        }
+      }
+    }
+
+    if (!user) {
+      return res.status(404).json({ error: 'Akun dengan email tersebut tidak ditemukan di toko ini' });
+    }
+
+    const storeNameRow = targetDb.prepare("SELECT value FROM settings WHERE key = 'store_name'").get() as any;
+    const storeName = storeNameRow?.value || `Toko ${resolvedTenantId}`;
+
+    const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+
+    targetDb.prepare(`
+      INSERT INTO email_otp_codes (email, tenant_id, otp_code, purpose, expires_at)
+      VALUES (?, ?, ?, 'RESET_PASSWORD', ?)
+    `).run(cleanEmail, resolvedTenantId, otpCode, expiresAt);
+
+    try {
+      defaultDb.prepare(`
+        INSERT INTO email_otp_codes (email, tenant_id, otp_code, purpose, expires_at)
+        VALUES (?, ?, ?, 'RESET_PASSWORD', ?)
+      `).run(cleanEmail, resolvedTenantId, otpCode, expiresAt);
+    } catch {}
+
+    const mailResult = await MailerService.sendOtpEmail({
+      to: cleanEmail,
+      otpCode,
+      purpose: 'RESET_PASSWORD',
+      storeName,
+      userName: user.name,
+    });
+
+    res.json({
+      success: true,
+      tenantId: resolvedTenantId,
+      maskedEmail: maskEmail(cleanEmail),
+      simulated: mailResult.simulated,
+      devOtp: mailResult.simulated ? otpCode : undefined,
+      message: 'Kode OTP reset kata sandi telah dikirim ke email Anda',
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Step 2 Lupa Password: Verifikasi OTP & Tetapkan Kata Sandi Baru
+apiRouter.post('/auth/reset-password', (req: Request, res: Response) => {
+  try {
+    const { tenantId, email, otpCode, newPassword } = req.body;
+    if (!email || !otpCode || !newPassword) {
+      return res.status(400).json({ error: 'Email, kode OTP, dan kata sandi baru wajib diisi' });
+    }
+    if (newPassword.length < 6) {
+      return res.status(400).json({ error: 'Kata sandi baru minimal 6 karakter' });
+    }
+
+    const cleanEmail = email.trim().toLowerCase();
+    const cleanOtp = String(otpCode).trim();
+    const tId = sanitizeTenantId(tenantId || 'default');
+    const targetDb = getTenantDatabase(tId);
+
+    let otpRecord = targetDb.prepare(`
+      SELECT id, expires_at, is_used FROM email_otp_codes
+      WHERE email = ? AND otp_code = ? AND purpose = 'RESET_PASSWORD' AND is_used = 0
+      ORDER BY id DESC LIMIT 1
+    `).get(cleanEmail, cleanOtp) as any;
+
+    if (!otpRecord) {
+      otpRecord = defaultDb.prepare(`
+        SELECT id, expires_at, is_used FROM email_otp_codes
+        WHERE email = ? AND otp_code = ? AND purpose = 'RESET_PASSWORD' AND is_used = 0
+        ORDER BY id DESC LIMIT 1
+      `).get(cleanEmail, cleanOtp) as any;
+    }
+
+    if (!otpRecord) {
+      return res.status(400).json({ error: 'Kode OTP tidak valid atau sudah digunakan' });
+    }
+
+    if (new Date(otpRecord.expires_at).getTime() < Date.now()) {
+      return res.status(400).json({ error: 'Kode OTP telah kedaluwarsa' });
+    }
+
+    targetDb.prepare('UPDATE email_otp_codes SET is_used = 1 WHERE id = ?').run(otpRecord.id);
+    try { defaultDb.prepare('UPDATE email_otp_codes SET is_used = 1 WHERE id = ?').run(otpRecord.id); } catch {}
+
+    const updateRes = targetDb.prepare(`
+      UPDATE users 
+      SET password = ?
+      WHERE (email IS NOT NULL AND LOWER(email) = ?) OR LOWER(username) = ?
+    `).run(hashSecret(newPassword), cleanEmail, cleanEmail);
+
+    if (updateRes.changes === 0) {
+      return res.status(404).json({ error: 'Pengguna tidak ditemukan untuk diperbarui' });
+    }
+
+    res.json({
+      success: true,
+      message: 'Kata sandi berhasil diperbarui. Silakan login dengan kata sandi baru Anda.',
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Ubah Kata Sandi Akun untuk Owner / Operator yang Sedang Login
+apiRouter.post('/auth/change-password', (req: Request, res: Response) => {
+  try {
+    if (!req.user || !req.user.userId) {
+      return res.status(401).json({ error: 'Sesi login diperlukan untuk mengubah kata sandi' });
+    }
+    const { oldPassword, newPassword } = req.body;
+    if (!oldPassword || !newPassword) {
+      return res.status(400).json({ error: 'Kata sandi lama dan baru wajib diisi' });
+    }
+    if (newPassword.length < 6) {
+      return res.status(400).json({ error: 'Kata sandi baru minimal 6 karakter' });
+    }
+
+    const targetDb = req.tenantDb || db;
+    const user = targetDb.prepare('SELECT id, password FROM users WHERE id = ?').get(req.user.userId) as any;
+    if (!user) {
+      return res.status(404).json({ error: 'Pengguna tidak ditemukan' });
+    }
+
+    if (!verifySecret(oldPassword, user.password)) {
+      return res.status(400).json({ error: 'Kata sandi saat ini (lama) tidak sesuai' });
+    }
+
+    targetDb.prepare('UPDATE users SET password = ? WHERE id = ?').run(hashSecret(newPassword), user.id);
+    res.json({ success: true, message: 'Kata sandi Anda berhasil diperbarui' });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Kompatibilitas Endpoint Lama: Login Kredensial Langsung
 apiRouter.post('/auth/login', (req: Request, res: Response) => {
   const { username, password } = req.body;
   const user = db.prepare('SELECT id, username, password, name, role, pin, is_active FROM users WHERE username = ?').get(username) as any;

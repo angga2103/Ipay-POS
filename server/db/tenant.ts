@@ -32,6 +32,11 @@ export const defaultDb = new Database(defaultDbPath);
 defaultDb.pragma('journal_mode = WAL');
 defaultDb.pragma('foreign_keys = ON');
 tenantPool.set('default', defaultDb);
+try {
+  initTenantDatabase(defaultDb, 'default');
+} catch (err) {
+  console.error('[TenantManager] Warning initializing defaultDb:', err);
+}
 
 /**
  * Sanitize tenant ID to prevent directory traversal and illegal characters
@@ -108,8 +113,25 @@ export function initTenantDatabase(tenantDb: Database.Database, tenantId: string
     );
   `);
 
-  // Users is_active column
+  // Users is_active, email, phone columns
   try { tenantDb.exec("ALTER TABLE users ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1"); } catch {}
+  try { tenantDb.exec("ALTER TABLE users ADD COLUMN email TEXT"); } catch {}
+  try { tenantDb.exec("ALTER TABLE users ADD COLUMN phone TEXT"); } catch {}
+
+  // Email OTP codes table
+  tenantDb.exec(`
+    CREATE TABLE IF NOT EXISTS email_otp_codes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      email TEXT NOT NULL,
+      tenant_id TEXT NOT NULL DEFAULT 'default',
+      otp_code TEXT NOT NULL,
+      purpose TEXT NOT NULL CHECK(purpose IN ('LOGIN', 'REGISTER', 'RESET_PASSWORD')),
+      expires_at DATETIME NOT NULL,
+      is_used INTEGER NOT NULL DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_otp_email_purpose ON email_otp_codes(email, purpose, is_used);
+  `);
 
   // PPOB Deposits table
   tenantDb.exec(`
@@ -305,4 +327,25 @@ export function closeTenantDatabase(rawTenantId: string) {
     } catch {}
     tenantPool.delete(tenantId);
   }
+}
+
+/**
+ * Mendapatkan ringkasan seluruh toko yang terdaftar (ID dan Nama Toko)
+ */
+export function getAllTenantSummaries(): { id: string; name: string }[] {
+  const ids = getAllTenantIds();
+  const result: { id: string; name: string }[] = [];
+  for (const id of ids) {
+    try {
+      const db = getTenantDatabase(id);
+      const row = db.prepare("SELECT value FROM settings WHERE key = 'store_name'").get() as any;
+      result.push({
+        id,
+        name: row?.value || (id === 'default' ? 'Toko Utama (Default)' : `Toko ${id}`),
+      });
+    } catch {
+      result.push({ id, name: id });
+    }
+  }
+  return result;
 }

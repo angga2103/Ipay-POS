@@ -6,6 +6,8 @@ export interface User {
   name: string;
   role: UserRole;
   pin?: string;
+  email?: string;
+  phone?: string;
 }
 
 export interface Shift {
