@@ -85,6 +85,48 @@ Selain backup cron harian di tingkat OS, aplikasi POS IPAY telah dilengkapi deng
 
 ---
 
+## 🔄 Cara Melakukan Update Aplikasi di VPS (PENTING!)
+
+Ketika ada perubahan fitur baru yang di-push ke repository GitHub, ikuti langkah standar berikut:
+
+```bash
+# 1. Masuk ke direktori aplikasi
+cd /var/www/pos-ipay
+
+# 2. Tarik update terbaru dari Git
+git pull origin main
+
+# 3. Pastikan dependensi terpasang
+npm install
+
+# 4. WAJIB: Kompilasi Ulang Frontend Vite (Agar perubahan UI muncul!)
+npm run build
+
+# 5. Restart Daemon Service Aplikasi
+sudo systemctl restart pos-ipay
+```
+
+> [!IMPORTANT]
+> **Mengapa tampilan di web belum berubah jika hanya `git pull`?**
+> Server Node.js Express menyajikan berkas frontend dari folder produksi `/dist/`. Perubahan kode di folder `client/` baru akan masuk ke `/dist/` setelah Anda menjalankan perintah **`npm run build`**. Jika langkah ini dilewati, server akan tetap menyajikan berkas tampilan lama!
+> Setelah menjalankan `npm run build` dan merestart service, lakukan **Hard Refresh** di browser Anda dengan menekan **Ctrl + Shift + R** (atau **Ctrl + F5**) untuk membersihkan cache browser.
+
+---
+
+## ⚠️ Penjelasan Proses: Systemd vs PM2
+
+* **POS IPAY Server Utama** dikelola oleh **Systemd Daemon** dengan nama layanan `pos-ipay.service`:
+  ```bash
+  # Cek status
+  sudo systemctl status pos-ipay
+  
+  # Restart layanan
+  sudo systemctl restart pos-ipay
+  ```
+* **PM2** di VPS Anda hanya mengelola bot WhatsApp/PPOB (`bot-ppob` ID: 0). Sehingga perintah `pm2 restart pos-ipay` akan menghasilkan error *"Process or Namespace pos-ipay not found"*, karena POS IPAY memang berjalan di bawah **systemd**, bukan PM2.
+
+---
+
 ## 🛠️ Perintah Berguna untuk Manajemen Server
 
 * **Mengecek Status Aplikasi**:
@@ -114,3 +156,4 @@ Selain backup cron harian di tingkat OS, aplikasi POS IPAY telah dilengkapi deng
 * **Owner**: `owner` | Password: `admin123` | PIN: `112233`
 * **Supervisor**: `spv` | Password: `spv123` | PIN: `223344`
 * **Kasir**: `kasir1` | Password: `kasir123` | PIN: `123456`
+
