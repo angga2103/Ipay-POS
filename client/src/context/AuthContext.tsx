@@ -11,19 +11,45 @@ interface AuthContextType {
   loginWithPin: (pin: string) => Promise<boolean>;
   loginStep1: (tenantId: string, username: string, password: string) => Promise<{
     success: boolean;
+    requiresPin?: boolean;
     requiresOtp?: boolean;
     tempSessionToken?: string;
     maskedEmail?: string;
     tenantId?: string;
     storeName?: string;
+    userName?: string;
+    hasPin?: boolean;
     simulated?: boolean;
     devOtp?: string;
+    error?: string;
+  }>;
+  loginVerifyPin: (tempSessionToken: string, pin: string) => Promise<{
+    success: boolean;
+    user?: User;
+    storeName?: string;
     error?: string;
   }>;
   loginVerifyOtp: (tempSessionToken: string, otpCode: string) => Promise<{
     success: boolean;
     user?: User;
     storeName?: string;
+    error?: string;
+  }>;
+  registerStoreDirect: (data: {
+    storeName: string;
+    ownerName: string;
+    username?: string;
+    phone?: string;
+    email?: string;
+    password: string;
+    pin: string;
+  }) => Promise<{
+    success: boolean;
+    user?: User;
+    tenantId?: string;
+    storeName?: string;
+    recoveryKey?: string;
+    message?: string;
     error?: string;
   }>;
   registerStoreSendOtp: (storeName: string, ownerName: string, email: string) => Promise<{
@@ -45,6 +71,37 @@ interface AuthContextType {
     user?: User;
     tenantId?: string;
     storeName?: string;
+    message?: string;
+    error?: string;
+  }>;
+  recoverPasswordWithPin: (data: {
+    tenantId: string;
+    username: string;
+    pin: string;
+    newPassword: string;
+  }) => Promise<{
+    success: boolean;
+    message?: string;
+    error?: string;
+  }>;
+  recoverPinWithPassword: (data: {
+    tenantId: string;
+    username: string;
+    password: string;
+    newPin: string;
+  }) => Promise<{
+    success: boolean;
+    message?: string;
+    error?: string;
+  }>;
+  recoverWithKey: (data: {
+    tenantId: string;
+    recoveryKey: string;
+    newPassword?: string;
+    newPin?: string;
+  }) => Promise<{
+    success: boolean;
+    newRecoveryKey?: string;
     message?: string;
     error?: string;
   }>;
@@ -72,6 +129,12 @@ interface AuthContextType {
     message?: string;
     error?: string;
   }>;
+  changePin: (oldPin: string, newPin: string) => Promise<{
+    success: boolean;
+    message?: string;
+    error?: string;
+  }>;
+  fetchRecoveryInfo: () => Promise<{ success: boolean; recoveryKey?: string }>;
   fetchTenantList: () => Promise<{ id: string; name: string }[]>;
   logout: () => void;
   switchUser: (userId: number) => void;
@@ -80,6 +143,7 @@ interface AuthContextType {
   verifySupervisorPin: (pin: string) => Promise<boolean>;
   hasRole: (roles: UserRole[]) => boolean;
 }
+
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
@@ -378,6 +442,157 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
+  const changePin = async (oldPin: string, newPin: string) => {
+    try {
+      const res = await fetch('/api/auth/change-pin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ oldPin, newPin }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        return { success: false, error: data.error || 'Gagal mengubah PIN' };
+      }
+      return data;
+    } catch (err: any) {
+      return { success: false, error: err.message || 'Koneksi ke server terputus' };
+    }
+  };
+
+  const loginVerifyPin = async (tempSessionToken: string, pin: string) => {
+    try {
+      const res = await fetch('/api/auth/login-verify-pin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tempSessionToken, pin }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        return { success: false, error: data.error || 'PIN Keamanan Toko salah' };
+      }
+
+      setCurrentUser(data.user);
+      setTenantIdState(data.tenantId);
+      if (data.storeName) setStoreName(data.storeName);
+      localStorage.setItem('pos_tenant_id', data.tenantId);
+      localStorage.setItem('pos_user', JSON.stringify(data.user));
+      if (data.token) localStorage.setItem('pos_auth_token', data.token);
+
+      return { success: true, user: data.user, storeName: data.storeName };
+    } catch (err: any) {
+      return { success: false, error: err.message || 'Gagal memverifikasi PIN' };
+    }
+  };
+
+  const registerStoreDirect = async (payload: {
+    storeName: string;
+    ownerName: string;
+    username?: string;
+    phone?: string;
+    email?: string;
+    password: string;
+    pin: string;
+  }) => {
+    try {
+      const res = await fetch('/api/auth/register-store', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        return { success: false, error: data.error || 'Pendaftaran toko gagal' };
+      }
+
+      setCurrentUser(data.user);
+      setTenantIdState(data.tenantId);
+      if (data.storeName) setStoreName(data.storeName);
+      localStorage.setItem('pos_tenant_id', data.tenantId);
+      localStorage.setItem('pos_user', JSON.stringify(data.user));
+      if (data.token) localStorage.setItem('pos_auth_token', data.token);
+
+      return data;
+    } catch (err: any) {
+      return { success: false, error: err.message || 'Koneksi ke server terputus' };
+    }
+  };
+
+  const recoverPasswordWithPin = async (payload: {
+    tenantId: string;
+    username: string;
+    pin: string;
+    newPassword: string;
+  }) => {
+    try {
+      const res = await fetch('/api/auth/recover-password-with-pin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        return { success: false, error: data.error || 'Gagal memulihkan kata sandi' };
+      }
+      return data;
+    } catch (err: any) {
+      return { success: false, error: err.message || 'Koneksi ke server terputus' };
+    }
+  };
+
+  const recoverPinWithPassword = async (payload: {
+    tenantId: string;
+    username: string;
+    password: string;
+    newPin: string;
+  }) => {
+    try {
+      const res = await fetch('/api/auth/recover-pin-with-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        return { success: false, error: data.error || 'Gagal memulihkan PIN' };
+      }
+      return data;
+    } catch (err: any) {
+      return { success: false, error: err.message || 'Koneksi ke server terputus' };
+    }
+  };
+
+  const recoverWithKey = async (payload: {
+    tenantId: string;
+    recoveryKey: string;
+    newPassword?: string;
+    newPin?: string;
+  }) => {
+    try {
+      const res = await fetch('/api/auth/recover-with-key', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        return { success: false, error: data.error || 'Gagal memulihkan akun dengan kode darurat' };
+      }
+      return data;
+    } catch (err: any) {
+      return { success: false, error: err.message || 'Koneksi ke server terputus' };
+    }
+  };
+
+  const fetchRecoveryInfo = async () => {
+    try {
+      const res = await fetch('/api/auth/recovery-info');
+      const data = await res.json();
+      return data;
+    } catch {
+      return { success: false };
+    }
+  };
+
   const fetchTenantList = async (): Promise<{ id: string; name: string }[]> => {
     try {
       const res = await fetch('/api/tenant/list');
@@ -399,12 +614,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         login,
         loginWithPin,
         loginStep1,
+        loginVerifyPin,
         loginVerifyOtp,
+        registerStoreDirect,
         registerStoreSendOtp,
         registerStoreComplete,
+        recoverPasswordWithPin,
+        recoverPinWithPassword,
+        recoverWithKey,
         forgotPasswordSendOtp,
         resetPasswordComplete,
         changePassword,
+        changePin,
+        fetchRecoveryInfo,
         fetchTenantList,
         logout,
         switchUser,
@@ -417,6 +639,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       {children}
     </AuthContext.Provider>
   );
+
 };
 
 export const useAuth = () => {

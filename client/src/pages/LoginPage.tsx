@@ -4,17 +4,18 @@ import {
   Store, Lock, User, AlertCircle, ArrowRight, 
   Smartphone, Sparkles, Eye, EyeOff, ShieldCheck, Zap, 
   Receipt, BarChart3, Building2, CheckCircle2, Mail,
-  RefreshCw, KeyRound, Phone, HelpCircle, ArrowLeft
+  RefreshCw, KeyRound, Phone, HelpCircle, ArrowLeft,
+  Copy, MessageSquare, Shield
 } from 'lucide-react';
 
 export const LoginPage: React.FC = () => {
   const { 
     loginStep1, 
-    loginVerifyOtp, 
-    registerStoreSendOtp, 
-    registerStoreComplete, 
-    forgotPasswordSendOtp, 
-    resetPasswordComplete, 
+    loginVerifyPin,
+    registerStoreDirect,
+    recoverPasswordWithPin,
+    recoverPinWithPassword,
+    recoverWithKey,
     fetchTenantList,
     tenantId, 
     storeName,
@@ -33,15 +34,16 @@ export const LoginPage: React.FC = () => {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
 
-  // OTP Login Modal State
-  const [showOtpModal, setShowOtpModal] = useState(false);
-  const [otpCode, setOtpCode] = useState('');
+  // PIN Login Modal State (Skema 1)
+  const [showPinModal, setShowPinModal] = useState(false);
+  const [pinCode, setPinCode] = useState('');
+  const [showPinCode, setShowPinCode] = useState(false);
   const [tempSessionToken, setTempSessionToken] = useState('');
-  const [maskedEmail, setMaskedEmail] = useState('');
-  const [otpDevCode, setOtpDevCode] = useState<string | undefined>(undefined);
-  const [resendCooldown, setResendCooldown] = useState(0);
+  const [loginStoreName, setLoginStoreName] = useState('');
+  const [pinModalError, setPinModalError] = useState<string | null>(null);
+  const [pinLoading, setPinLoading] = useState(false);
 
-  // Register Form State
+  // Register Form State (Skema 1)
   const [regStoreName, setRegStoreName] = useState('');
   const [regOwnerName, setRegOwnerName] = useState('');
   const [regEmail, setRegEmail] = useState('');
@@ -49,24 +51,33 @@ export const LoginPage: React.FC = () => {
   const [regPassword, setRegPassword] = useState('');
   const [regConfirmPassword, setRegConfirmPassword] = useState('');
   const [showRegPassword, setShowRegPassword] = useState(false);
+  const [regPin, setRegPin] = useState('');
+  const [regConfirmPin, setRegConfirmPin] = useState('');
+  const [showRegPin, setShowRegPin] = useState(false);
 
-  // Register OTP Modal State
-  const [showRegOtpModal, setShowRegOtpModal] = useState(false);
-  const [regOtpCode, setRegOtpCode] = useState('');
-  const [regDevCode, setRegDevCode] = useState<string | undefined>(undefined);
-  const [regMaskedEmail, setRegMaskedEmail] = useState('');
+  // Register Success & Recovery Key Modal State
+  const [showRegisterSuccessModal, setShowRegisterSuccessModal] = useState(false);
+  const [registeredRecoveryKey, setRegisteredRecoveryKey] = useState('');
+  const [registeredStoreName, setRegisteredStoreName] = useState('');
+  const [copiedRecoveryKey, setCopiedRecoveryKey] = useState(false);
 
-  // Forgot Password Modal State
-  const [showForgotModal, setShowForgotModal] = useState(false);
-  const [forgotStep, setForgotStep] = useState<1 | 2>(1);
-  const [forgotTenantId, setForgotTenantId] = useState(tenantId || 'default');
-  const [forgotEmail, setForgotEmail] = useState('');
-  const [forgotOtpCode, setForgotOtpCode] = useState('');
-  const [forgotNewPassword, setForgotNewPassword] = useState('');
-  const [forgotConfirmPassword, setForgotConfirmPassword] = useState('');
-  const [forgotDevCode, setForgotDevCode] = useState<string | undefined>(undefined);
+  // Recovery Center Modal State (Lupa Password / Lupa PIN)
+  const [showRecoveryModal, setShowRecoveryModal] = useState(false);
+  const [recoveryTab, setRecoveryTab] = useState<'forgot_password' | 'forgot_pin' | 'emergency'>('forgot_password');
+  const [recoveryTenantId, setRecoveryTenantId] = useState(tenantId || 'default');
+  const [recoveryUsername, setRecoveryUsername] = useState('');
+  const [recoveryPin, setRecoveryPin] = useState('');
+  const [recoveryNewPassword, setRecoveryNewPassword] = useState('');
+  const [recoveryConfirmPassword, setRecoveryConfirmPassword] = useState('');
+  const [recoveryCurrentPassword, setRecoveryCurrentPassword] = useState('');
+  const [recoveryNewPin, setRecoveryNewPin] = useState('');
+  const [recoveryConfirmPin, setRecoveryConfirmPin] = useState('');
+  const [emergencyKey, setEmergencyKey] = useState('');
+  const [recoveryLoading, setRecoveryLoading] = useState(false);
+  const [recoverySuccessMsg, setRecoverySuccessMsg] = useState<string | null>(null);
+  const [recoveryError, setRecoveryError] = useState<string | null>(null);
 
-  // Feedback State
+  // General Feedback State
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -80,20 +91,11 @@ export const LoginPage: React.FC = () => {
       .catch(() => {});
   }, [fetchTenantList]);
 
-  // Resend cooldown timer
-  useEffect(() => {
-    if (resendCooldown <= 0) return;
-    const timer = setInterval(() => {
-      setResendCooldown(prev => (prev > 0 ? prev - 1 : 0));
-    }, 1000);
-    return () => clearInterval(timer);
-  }, [resendCooldown]);
-
-  // Handle Login Step 1: Submit Store + User/Email + Password
+  // Handle Login Step 1: Submit Store + User/Phone + Password
   const handleLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!usernameOrEmail.trim() || !password) {
-      setError('Harap masukkan username atau email dan kata sandi');
+      setError('Harap masukkan username atau No HP dan kata sandi');
       return;
     }
     setError(null);
@@ -105,65 +107,45 @@ export const LoginPage: React.FC = () => {
     setLoading(false);
 
     if (!res.success) {
-      setError(res.error || 'Username/Email atau kata sandi tidak valid');
+      setError(res.error || 'Username/No HP atau kata sandi tidak cocok');
       return;
     }
 
-    if (res.requiresOtp && res.tempSessionToken) {
+    if (res.requiresPin && res.tempSessionToken) {
       setTempSessionToken(res.tempSessionToken);
-      setMaskedEmail(res.maskedEmail || 'email Anda');
-      setOtpDevCode(res.devOtp);
-      setShowOtpModal(true);
-      setOtpCode(res.devOtp || '');
-      setResendCooldown(60);
+      setLoginStoreName(res.storeName || 'Toko Anda');
+      setShowPinModal(true);
+      setPinCode('');
+      setPinModalError(null);
     }
   };
 
-  // Handle Login Step 2: Verify 6-digit OTP
-  const handleVerifyOtpSubmit = async (e: React.FormEvent) => {
+  // Handle Login Step 2: Verify 6-digit PIN
+  const handleVerifyPinSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!otpCode || otpCode.trim().length < 4) {
-      setError('Masukkan kode OTP dengan lengkap');
+    if (!pinCode || pinCode.trim().length !== 6) {
+      setPinModalError('PIN Keamanan Toko harus terdiri dari 6 digit angka');
       return;
     }
-    setError(null);
-    setLoading(true);
+    setPinModalError(null);
+    setPinLoading(true);
 
-    const res = await loginVerifyOtp(tempSessionToken, otpCode.trim());
-    setLoading(false);
+    const res = await loginVerifyPin(tempSessionToken, pinCode.trim());
+    setPinLoading(false);
 
     if (!res.success) {
-      setError(res.error || 'Kode OTP salah atau kedaluwarsa');
+      setPinModalError(res.error || '6-Digit PIN Keamanan Toko salah');
       return;
     }
 
-    setShowOtpModal(false);
+    setShowPinModal(false);
   };
 
-  // Resend Login OTP
-  const handleResendLoginOtp = async () => {
-    if (resendCooldown > 0) return;
-    setLoading(true);
-    setError(null);
-    const targetTId = selectedTenantId.trim() || 'default';
-    const res = await loginStep1(targetTId, usernameOrEmail.trim(), password);
-    setLoading(false);
-    if (res.success && res.tempSessionToken) {
-      setTempSessionToken(res.tempSessionToken);
-      setMaskedEmail(res.maskedEmail || 'email Anda');
-      setOtpDevCode(res.devOtp);
-      setResendCooldown(60);
-      setSuccessMsg('Kode OTP baru telah dikirimkan ke email Anda');
-    } else {
-      setError(res.error || 'Gagal mengirim ulang kode OTP');
-    }
-  };
-
-  // Handle Register Step 1: Submit Store Registration
+  // Handle Register: Direct Self-Registration with Password and 6-Digit PIN
   const handleRegisterSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!regStoreName.trim() || !regOwnerName.trim() || !regEmail.trim() || !regPassword) {
-      setError('Semua kolom wajib diisi untuk pendaftaran toko');
+    if (!regStoreName.trim() || !regOwnerName.trim() || !regPassword || !regPin) {
+      setError('Semua kolom bertanda * wajib diisi');
       return;
     }
     if (regPassword.length < 6) {
@@ -174,117 +156,158 @@ export const LoginPage: React.FC = () => {
       setError('Konfirmasi kata sandi tidak cocok');
       return;
     }
+    if (!/^\d{6}$/.test(regPin)) {
+      setError('PIN Keamanan Master harus terdiri dari 6 digit angka');
+      return;
+    }
+    if (regPin !== regConfirmPin) {
+      setError('Konfirmasi PIN Keamanan tidak cocok');
+      return;
+    }
 
     setError(null);
     setSuccessMsg(null);
     setLoading(true);
 
-    const res = await registerStoreSendOtp(regStoreName.trim(), regOwnerName.trim(), regEmail.trim());
-    setLoading(false);
-
-    if (!res.success) {
-      setError(res.error || 'Gagal mengirim kode verifikasi pendaftaran');
-      return;
-    }
-
-    setRegMaskedEmail(res.maskedEmail || regEmail);
-    setRegDevCode(res.devOtp);
-    setRegOtpCode(res.devOtp || '');
-    setShowRegOtpModal(true);
-  };
-
-  // Handle Register Step 2: Complete Registration with OTP
-  const handleRegisterCompleteSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!regOtpCode || regOtpCode.trim().length < 4) {
-      setError('Harap masukkan kode OTP verifikasi pendaftaran');
-      return;
-    }
-    setError(null);
-    setLoading(true);
-
-    const res = await registerStoreComplete({
+    const res = await registerStoreDirect({
       storeName: regStoreName.trim(),
       ownerName: regOwnerName.trim(),
-      email: regEmail.trim(),
       phone: regPhone.trim() || undefined,
+      email: regEmail.trim() || undefined,
       password: regPassword,
-      otpCode: regOtpCode.trim(),
+      pin: regPin.trim(),
     });
     setLoading(false);
 
     if (!res.success) {
-      setError(res.error || 'Pendaftaran toko gagal diverifikasi');
+      setError(res.error || 'Pendaftaran toko gagal diproses');
       return;
     }
 
-    setShowRegOtpModal(false);
+    setRegisteredRecoveryKey(res.recoveryKey || '');
+    setRegisteredStoreName(res.storeName || regStoreName);
+    setShowRegisterSuccessModal(true);
   };
 
-  // Handle Forgot Password Step 1: Send Reset OTP
-  const handleForgotSendOtp = async (e: React.FormEvent) => {
+  // Handle Recover Password (via PIN)
+  const handleRecoverPasswordSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!forgotEmail.trim()) {
-      setError('Harap masukkan email akun yang terdaftar');
+    if (!recoveryUsername.trim() || !recoveryPin.trim() || !recoveryNewPassword) {
+      setRecoveryError('Harap lengkapi semua kolom');
       return;
     }
-    setError(null);
-    setLoading(true);
-
-    const res = await forgotPasswordSendOtp(forgotTenantId.trim() || 'default', forgotEmail.trim());
-    setLoading(false);
-
-    if (!res.success) {
-      setError(res.error || 'Akun tidak ditemukan');
+    if (recoveryNewPassword.length < 6) {
+      setRecoveryError('Kata sandi baru minimal 6 karakter');
       return;
     }
-
-    setForgotDevCode(res.devOtp);
-    setForgotOtpCode(res.devOtp || '');
-    setForgotStep(2);
-    setSuccessMsg('Kode verifikasi reset sandi telah dikirim ke email');
-  };
-
-  // Handle Forgot Password Step 2: Complete Reset
-  const handleForgotResetSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!forgotOtpCode.trim() || !forgotNewPassword) {
-      setError('Harap isi kode OTP dan kata sandi baru');
+    if (recoveryNewPassword !== recoveryConfirmPassword) {
+      setRecoveryError('Konfirmasi kata sandi baru tidak cocok');
       return;
     }
-    if (forgotNewPassword.length < 6) {
-      setError('Kata sandi baru minimal 6 karakter');
-      return;
-    }
-    if (forgotNewPassword !== forgotConfirmPassword) {
-      setError('Konfirmasi kata sandi tidak cocok');
-      return;
-    }
+    setRecoveryError(null);
+    setRecoveryLoading(true);
 
-    setError(null);
-    setLoading(true);
-
-    const res = await resetPasswordComplete({
-      tenantId: forgotTenantId.trim() || 'default',
-      email: forgotEmail.trim(),
-      otpCode: forgotOtpCode.trim(),
-      newPassword: forgotNewPassword,
+    const res = await recoverPasswordWithPin({
+      tenantId: recoveryTenantId.trim() || 'default',
+      username: recoveryUsername.trim(),
+      pin: recoveryPin.trim(),
+      newPassword: recoveryNewPassword,
     });
-    setLoading(false);
+    setRecoveryLoading(false);
 
     if (!res.success) {
-      setError(res.error || 'Gagal menyetel ulang kata sandi');
+      setRecoveryError(res.error || 'Gagal memulihkan kata sandi');
       return;
     }
 
-    setShowForgotModal(false);
-    setForgotStep(1);
-    setForgotEmail('');
-    setForgotNewPassword('');
-    setForgotConfirmPassword('');
-    setForgotOtpCode('');
-    setSuccessMsg('Kata sandi Anda berhasil diperbarui! Silakan masuk dengan kata sandi baru.');
+    setRecoverySuccessMsg('Kata sandi berhasil diperbarui! Silakan login dengan kata sandi baru Anda.');
+    setTimeout(() => {
+      setShowRecoveryModal(false);
+      setRecoverySuccessMsg(null);
+    }, 2500);
   };
+
+  // Handle Recover PIN (via Password)
+  const handleRecoverPinSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!recoveryUsername.trim() || !recoveryCurrentPassword || !recoveryNewPin) {
+      setRecoveryError('Harap lengkapi semua kolom');
+      return;
+    }
+    if (!/^\d{6}$/.test(recoveryNewPin)) {
+      setRecoveryError('PIN baru harus 6 digit angka');
+      return;
+    }
+    if (recoveryNewPin !== recoveryConfirmPin) {
+      setRecoveryError('Konfirmasi PIN baru tidak cocok');
+      return;
+    }
+    setRecoveryError(null);
+    setRecoveryLoading(true);
+
+    const res = await recoverPinWithPassword({
+      tenantId: recoveryTenantId.trim() || 'default',
+      username: recoveryUsername.trim(),
+      password: recoveryCurrentPassword,
+      newPin: recoveryNewPin.trim(),
+    });
+    setRecoveryLoading(false);
+
+    if (!res.success) {
+      setRecoveryError(res.error || 'Gagal memulihkan PIN keamanan');
+      return;
+    }
+
+    setRecoverySuccessMsg('PIN keamanan berhasil diperbarui! Silakan gunakan PIN baru Anda.');
+    setTimeout(() => {
+      setShowRecoveryModal(false);
+      setRecoverySuccessMsg(null);
+    }, 2500);
+  };
+
+  // Handle Emergency Recovery (via Master Recovery Key)
+  const handleRecoverEmergencySubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!recoveryTenantId.trim() || !emergencyKey.trim()) {
+      setRecoveryError('ID Toko dan Kode Pemulihan Darurat wajib diisi');
+      return;
+    }
+    if (!recoveryNewPassword && !recoveryNewPin) {
+      setRecoveryError('Masukkan kata sandi baru atau PIN baru');
+      return;
+    }
+    if (recoveryNewPassword && recoveryNewPassword.length < 6) {
+      setRecoveryError('Kata sandi baru minimal 6 karakter');
+      return;
+    }
+    if (recoveryNewPin && !/^\d{6}$/.test(recoveryNewPin)) {
+      setRecoveryError('PIN baru harus 6 digit angka');
+      return;
+    }
+
+    setRecoveryError(null);
+    setRecoveryLoading(true);
+
+    const res = await recoverWithKey({
+      tenantId: recoveryTenantId.trim(),
+      recoveryKey: emergencyKey.trim(),
+      newPassword: recoveryNewPassword || undefined,
+      newPin: recoveryNewPin || undefined,
+    });
+    setRecoveryLoading(false);
+
+    if (!res.success) {
+      setRecoveryError(res.error || 'Kode pemulihan darurat tidak cocok');
+      return;
+    }
+
+    setRecoverySuccessMsg('Akun berhasil dipulihkan! Catat kode pemulihan baru Anda: ' + (res.newRecoveryKey || ''));
+    setTimeout(() => {
+      setShowRecoveryModal(false);
+      setRecoverySuccessMsg(null);
+    }, 4000);
+  };
+
 
   return (
     <div className="min-h-screen w-full bg-slate-950 text-slate-100 flex flex-col justify-between selection:bg-blue-600 selection:text-white relative overflow-hidden">
@@ -451,10 +474,10 @@ export const LoginPage: React.FC = () => {
                     </p>
                   </div>
 
-                  {/* Username atau Email */}
+                  {/* Username atau No HP */}
                   <div>
                     <label className="block text-xs font-semibold text-slate-300 mb-1.5">
-                      Username atau Email
+                      Username atau No. WhatsApp / HP
                     </label>
                     <div className="relative">
                       <User className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
@@ -462,8 +485,9 @@ export const LoginPage: React.FC = () => {
                         type="text"
                         value={usernameOrEmail}
                         onChange={e => setUsernameOrEmail(e.target.value)}
-                        placeholder="Contoh: owner atau kasir1 atau email@anda.com"
+                        placeholder="Contoh: owner atau 08123456789"
                         className="w-full pl-10 pr-4 py-2.5 bg-slate-950/80 border border-slate-800 rounded-xl text-white text-sm focus:outline-hidden focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition placeholder:text-slate-500"
+                        required
                       />
                     </div>
                   </div>
@@ -472,18 +496,21 @@ export const LoginPage: React.FC = () => {
                   <div>
                     <div className="flex items-center justify-between mb-1.5">
                       <label className="block text-xs font-semibold text-slate-300">
-                        Kata Sandi
+                        Kata Sandi Akun
                       </label>
                       <button
                         type="button"
                         onClick={() => {
-                          setForgotTenantId(selectedTenantId || 'default');
-                          setShowForgotModal(true);
+                          setRecoveryTenantId(selectedTenantId || 'default');
+                          setRecoveryUsername(usernameOrEmail);
+                          setRecoveryError(null);
+                          setRecoverySuccessMsg(null);
+                          setShowRecoveryModal(true);
                           setError(null);
                         }}
                         className="text-[11px] text-blue-400 hover:text-blue-300 font-semibold cursor-pointer"
                       >
-                        Lupa Password?
+                        Lupa Sandi / PIN?
                       </button>
                     </div>
                     <div className="relative">
@@ -494,6 +521,7 @@ export const LoginPage: React.FC = () => {
                         onChange={e => setPassword(e.target.value)}
                         placeholder="Masukkan kata sandi akun"
                         className="w-full pl-10 pr-10 py-2.5 bg-slate-950/80 border border-slate-800 rounded-xl text-white text-sm focus:outline-hidden focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition placeholder:text-slate-500"
+                        required
                       />
                       <button
                         type="button"
@@ -513,11 +541,11 @@ export const LoginPage: React.FC = () => {
                     {loading ? (
                       <>
                         <RefreshCw className="w-4 h-4 animate-spin" />
-                        <span>Memproses Verifikasi...</span>
+                        <span>Memeriksa Kredensial...</span>
                       </>
                     ) : (
                       <>
-                        <span>Masuk & Minta Kode OTP</span>
+                        <span>Masuk ke Toko</span>
                         <ArrowRight className="w-4 h-4" />
                       </>
                     )}
@@ -538,9 +566,9 @@ export const LoginPage: React.FC = () => {
                 </form>
               )}
 
-              {/* TAB 2: DAFTAR TOKO BARU (REGISTRASI MANDIRI) */}
+              {/* TAB 2: DAFTAR TOKO BARU (SKEMA 1: PASSWORD + 6-DIGIT MASTER PIN) */}
               {activeTab === 'register' && (
-                <form onSubmit={handleRegisterSubmit} className="space-y-3.5">
+                <form onSubmit={handleRegisterSubmit} className="space-y-3">
                   <div>
                     <label className="block text-xs font-semibold text-slate-300 mb-1">
                       Nama Toko / Usaha <span className="text-rose-400">*</span>
@@ -552,62 +580,48 @@ export const LoginPage: React.FC = () => {
                         value={regStoreName}
                         onChange={e => setRegStoreName(e.target.value)}
                         placeholder="Contoh: Toko Berkah Sejahtera"
-                        className="w-full pl-10 pr-4 py-2 bg-slate-950/80 border border-slate-800 rounded-xl text-white text-sm focus:outline-hidden focus:border-blue-500 transition placeholder:text-slate-500"
+                        className="w-full pl-10 pr-4 py-2 bg-slate-950/80 border border-slate-800 rounded-xl text-white text-xs sm:text-sm focus:outline-hidden focus:border-blue-500 transition placeholder:text-slate-500"
                         required
                       />
                     </div>
                   </div>
 
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-300 mb-1">
-                      Nama Pemilik (Owner) <span className="text-rose-400">*</span>
-                    </label>
-                    <div className="relative">
-                      <User className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
-                      <input
-                        type="text"
-                        value={regOwnerName}
-                        onChange={e => setRegOwnerName(e.target.value)}
-                        placeholder="Nama lengkap Anda"
-                        className="w-full pl-10 pr-4 py-2 bg-slate-950/80 border border-slate-800 rounded-xl text-white text-sm focus:outline-hidden focus:border-blue-500 transition placeholder:text-slate-500"
-                        required
-                      />
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-300 mb-1">
+                        Nama Pemilik (Owner) <span className="text-rose-400">*</span>
+                      </label>
+                      <div className="relative">
+                        <User className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                        <input
+                          type="text"
+                          value={regOwnerName}
+                          onChange={e => setRegOwnerName(e.target.value)}
+                          placeholder="Nama lengkap Anda"
+                          className="w-full pl-10 pr-3 py-2 bg-slate-950/80 border border-slate-800 rounded-xl text-white text-xs focus:outline-hidden focus:border-blue-500 transition placeholder:text-slate-500"
+                          required
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-300 mb-1">
+                        No. HP / WhatsApp
+                      </label>
+                      <div className="relative">
+                        <Phone className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                        <input
+                          type="text"
+                          value={regPhone}
+                          onChange={e => setRegPhone(e.target.value)}
+                          placeholder="081234567890"
+                          className="w-full pl-10 pr-3 py-2 bg-slate-950/80 border border-slate-800 rounded-xl text-white text-xs focus:outline-hidden focus:border-blue-500 transition placeholder:text-slate-500"
+                        />
+                      </div>
                     </div>
                   </div>
 
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-300 mb-1">
-                      Email Pemilik (Untuk OTP & Pemulihan) <span className="text-rose-400">*</span>
-                    </label>
-                    <div className="relative">
-                      <Mail className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
-                      <input
-                        type="email"
-                        value={regEmail}
-                        onChange={e => setRegEmail(e.target.value)}
-                        placeholder="nama@email.com"
-                        className="w-full pl-10 pr-4 py-2 bg-slate-950/80 border border-slate-800 rounded-xl text-white text-sm focus:outline-hidden focus:border-blue-500 transition placeholder:text-slate-500"
-                        required
-                      />
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-300 mb-1">
-                      Nomor HP / WhatsApp (Opsional)
-                    </label>
-                    <div className="relative">
-                      <Phone className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
-                      <input
-                        type="text"
-                        value={regPhone}
-                        onChange={e => setRegPhone(e.target.value)}
-                        placeholder="081234567890"
-                        className="w-full pl-10 pr-4 py-2 bg-slate-950/80 border border-slate-800 rounded-xl text-white text-sm focus:outline-hidden focus:border-blue-500 transition placeholder:text-slate-500"
-                      />
-                    </div>
-                  </div>
-
+                  {/* Kata Sandi */}
                   <div className="grid grid-cols-2 gap-2.5">
                     <div>
                       <label className="block text-xs font-semibold text-slate-300 mb-1">
@@ -628,7 +642,7 @@ export const LoginPage: React.FC = () => {
 
                     <div>
                       <label className="block text-xs font-semibold text-slate-300 mb-1">
-                        Konfirmasi Sandi <span className="text-rose-400">*</span>
+                        Ulangi Sandi <span className="text-rose-400">*</span>
                       </label>
                       <div className="relative">
                         <Lock className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
@@ -651,10 +665,60 @@ export const LoginPage: React.FC = () => {
                     </div>
                   </div>
 
+                  {/* PIN Keamanan Master Toko (6 Digit) */}
+                  <div className="grid grid-cols-2 gap-2.5 p-3 rounded-xl bg-slate-900/60 border border-slate-800">
+                    <div>
+                      <label className="block text-xs font-semibold text-emerald-400 mb-1">
+                        PIN Master (6 Digit) <span className="text-rose-400">*</span>
+                      </label>
+                      <div className="relative">
+                        <KeyRound className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-emerald-400" />
+                        <input
+                          type={showRegPin ? 'text' : 'password'}
+                          maxLength={6}
+                          value={regPin}
+                          onChange={e => setRegPin(e.target.value.replace(/\D/g, ''))}
+                          placeholder="123456"
+                          className="w-full pl-8 pr-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-white text-xs font-mono font-bold tracking-widest focus:outline-hidden focus:border-emerald-500 transition placeholder:text-slate-500 placeholder:font-sans placeholder:tracking-normal"
+                          required
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-semibold text-emerald-400 mb-1">
+                        Konfirmasi PIN <span className="text-rose-400">*</span>
+                      </label>
+                      <div className="relative">
+                        <KeyRound className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-emerald-400" />
+                        <input
+                          type={showRegPin ? 'text' : 'password'}
+                          maxLength={6}
+                          value={regConfirmPin}
+                          onChange={e => setRegConfirmPin(e.target.value.replace(/\D/g, ''))}
+                          placeholder="Ulangi PIN"
+                          className="w-full pl-8 pr-8 py-2 bg-slate-950 border border-slate-700 rounded-xl text-white text-xs font-mono font-bold tracking-widest focus:outline-hidden focus:border-emerald-500 transition placeholder:text-slate-500 placeholder:font-sans placeholder:tracking-normal"
+                          required
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowRegPin(!showRegPin)}
+                          className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 cursor-pointer"
+                        >
+                          {showRegPin ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <p className="text-[11px] text-slate-400 leading-tight">
+                    PIN 6-digit digunakan sebagai pengaman lapis kedua saat login dan otorisasi transaksi kasir.
+                  </p>
+
                   <button
                     type="submit"
                     disabled={loading}
-                    className="w-full py-3 rounded-xl bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white font-bold text-xs tracking-wide transition shadow-lg shadow-blue-600/30 flex items-center justify-center gap-2 cursor-pointer mt-4"
+                    className="w-full py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white font-bold text-xs tracking-wide transition shadow-lg shadow-emerald-600/30 flex items-center justify-center gap-2 cursor-pointer mt-3"
                   >
                     {loading ? (
                       <>
@@ -663,7 +727,7 @@ export const LoginPage: React.FC = () => {
                       </>
                     ) : (
                       <>
-                        <span>Daftar & Minta Kode Verifikasi</span>
+                        <span>Daftar Toko & Buat PIN</span>
                         <ArrowRight className="w-4 h-4" />
                       </>
                     )}
@@ -685,81 +749,80 @@ export const LoginPage: React.FC = () => {
         </div>
       </main>
 
-      {/* MODAL 1: VERIFIKASI KODE OTP LOGIN */}
-      {showOtpModal && (
+      {/* MODAL 1: VERIFIKASI 6-DIGIT PIN KEAMANAN TOKO (SKEMA 1) */}
+      {showPinModal && (
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
           <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-md w-full p-6 sm:p-8 shadow-2xl animate-scale-up relative">
             <div className="text-center mb-6">
-              <div className="w-14 h-14 rounded-2xl bg-blue-600/20 text-blue-400 flex items-center justify-center mx-auto mb-3.5">
+              <div className="w-14 h-14 rounded-2xl bg-emerald-600/20 text-emerald-400 flex items-center justify-center mx-auto mb-3.5">
                 <ShieldCheck className="w-8 h-8" />
               </div>
-              <h3 className="text-lg font-bold text-white">Verifikasi Keamanan Akun</h3>
+              <h3 className="text-lg font-bold text-white">Verifikasi PIN Keamanan Toko</h3>
               <p className="text-xs text-slate-400 mt-1 leading-relaxed">
-                Kode OTP 6-digit telah dikirimkan ke email terdaftar Anda: <strong className="text-blue-300 font-mono">{maskedEmail}</strong>
+                Toko: <strong className="text-emerald-300">{loginStoreName}</strong><br />
+                Masukkan 6-digit PIN Master Anda untuk melanjutkan masuk ke kasir:
               </p>
             </div>
 
-            {/* Banner Mode Simulasi / Offline jika SMTP belum diatur */}
-            {otpDevCode && (
-              <div className="mb-5 p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs flex items-center justify-between gap-3">
-                <div className="leading-snug">
-                  <span className="font-bold">Mode Pengujian / Dev:</span><br />
-                  Kode OTP Anda: <strong className="text-white font-mono text-sm tracking-widest">{otpDevCode}</strong>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setOtpCode(otpDevCode)}
-                  className="px-2.5 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 text-[11px] font-bold shrink-0 cursor-pointer"
-                >
-                  Isi Cepat
-                </button>
+            {pinModalError && (
+              <div className="mb-4 p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0" />
+                <span>{pinModalError}</span>
               </div>
             )}
 
-            <form onSubmit={handleVerifyOtpSubmit} className="space-y-4">
+            <form onSubmit={handleVerifyPinSubmit} className="space-y-4">
               <div>
-                <label className="block text-xs font-semibold text-slate-300 text-center mb-2">
-                  Masukkan 6 Digit Kode OTP
-                </label>
-                <input
-                  type="text"
-                  maxLength={6}
-                  value={otpCode}
-                  onChange={e => setOtpCode(e.target.value.replace(/\D/g, ''))}
-                  placeholder="000000"
-                  autoFocus
-                  className="w-full py-3.5 bg-slate-950 border border-slate-700 rounded-2xl text-white text-center text-2xl font-bold tracking-[10px] font-mono focus:outline-hidden focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-                />
+                <div className="relative">
+                  <input
+                    type={showPinCode ? 'text' : 'password'}
+                    maxLength={6}
+                    value={pinCode}
+                    onChange={e => setPinCode(e.target.value.replace(/\D/g, ''))}
+                    placeholder="••••••"
+                    autoFocus
+                    className="w-full py-3.5 bg-slate-950 border border-slate-700 rounded-2xl text-white text-center text-2xl font-bold tracking-[14px] font-mono focus:outline-hidden focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPinCode(!showPinCode)}
+                    className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 cursor-pointer"
+                  >
+                    {showPinCode ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+                  </button>
+                </div>
               </div>
 
-              <div className="flex items-center justify-between text-xs text-slate-400 pt-1">
-                <span>Tidak menerima kode?</span>
+              <div className="flex items-center justify-end text-xs pt-1">
                 <button
                   type="button"
-                  onClick={handleResendLoginOtp}
-                  disabled={resendCooldown > 0 || loading}
-                  className={`font-semibold cursor-pointer ${
-                    resendCooldown > 0 ? 'text-slate-500 cursor-not-allowed' : 'text-blue-400 hover:text-blue-300'
-                  }`}
+                  onClick={() => {
+                    setShowPinModal(false);
+                    setRecoveryTenantId(selectedTenantId || 'default');
+                    setRecoveryUsername(usernameOrEmail);
+                    setRecoveryTab('forgot_pin');
+                    setShowRecoveryModal(true);
+                  }}
+                  className="text-blue-400 hover:text-blue-300 font-semibold cursor-pointer"
                 >
-                  {resendCooldown > 0 ? `Kirim ulang (${resendCooldown}s)` : 'Kirim Ulang Kode'}
+                  Lupa PIN Keamanan?
                 </button>
               </div>
 
               <div className="grid grid-cols-2 gap-3 pt-3">
                 <button
                   type="button"
-                  onClick={() => { setShowOtpModal(false); setOtpCode(''); }}
+                  onClick={() => { setShowPinModal(false); setPinCode(''); }}
                   className="py-2.5 rounded-xl text-xs font-bold text-slate-400 hover:text-white hover:bg-slate-800 transition cursor-pointer"
                 >
                   Batal
                 </button>
                 <button
                   type="submit"
-                  disabled={loading}
-                  className="py-2.5 rounded-xl text-xs font-bold bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white transition shadow-lg shadow-blue-600/30 flex items-center justify-center gap-1.5 cursor-pointer"
+                  disabled={pinLoading}
+                  className="py-2.5 rounded-xl text-xs font-bold bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white transition shadow-lg shadow-emerald-600/30 flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
                 >
-                  {loading ? (
+                  {pinLoading ? (
                     <RefreshCw className="w-3.5 h-3.5 animate-spin" />
                   ) : (
                     <>
@@ -774,219 +837,395 @@ export const LoginPage: React.FC = () => {
         </div>
       )}
 
-      {/* MODAL 2: VERIFIKASI KODE OTP REGISTRASI TOKO */}
-      {showRegOtpModal && (
+      {/* MODAL 2: PENDAFTARAN SUKSES & MASTER RECOVERY KEY */}
+      {showRegisterSuccessModal && (
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-md w-full p-6 sm:p-8 shadow-2xl animate-scale-up relative">
-            <div className="text-center mb-6">
+          <div className="bg-slate-900 border border-emerald-500/30 rounded-3xl max-w-md w-full p-6 sm:p-8 shadow-2xl animate-scale-up relative">
+            <div className="text-center mb-5">
               <div className="w-14 h-14 rounded-2xl bg-emerald-600/20 text-emerald-400 flex items-center justify-center mx-auto mb-3.5">
-                <Store className="w-8 h-8" />
+                <CheckCircle2 className="w-8 h-8" />
               </div>
-              <h3 className="text-lg font-bold text-white">Verifikasi Pendaftaran Toko</h3>
-              <p className="text-xs text-slate-400 mt-1 leading-relaxed">
-                Kami telah mengirimkan kode aktivasi ke <strong className="text-emerald-300 font-mono">{regMaskedEmail}</strong>
+              <h3 className="text-lg font-bold text-white">Toko Berhasil Didaftarkan!</h3>
+              <p className="text-xs text-slate-400 mt-1">
+                Selamat! Toko <strong className="text-emerald-300">{registeredStoreName}</strong> telah aktif dan siap digunakan.
               </p>
             </div>
 
-            {regDevCode && (
-              <div className="mb-5 p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs flex items-center justify-between gap-3">
-                <div className="leading-snug">
-                  <span className="font-bold">Mode Pengujian / Dev:</span><br />
-                  Kode Aktivasi: <strong className="text-white font-mono text-sm tracking-widest">{regDevCode}</strong>
-                </div>
+            <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-200 text-xs space-y-2 mb-5">
+              <div className="font-bold flex items-center gap-1.5 text-amber-300">
+                <KeyRound className="w-4 h-4 text-amber-400" />
+                <span>Simpan Kode Pemulihan Darurat Anda!</span>
+              </div>
+              <p className="text-[11px] text-slate-300 leading-relaxed">
+                Catat kode ini di tempat yang aman. Kode ini berguna untuk memulihkan akses toko jika Anda sewaktu-waktu lupa kata sandi DAN PIN keamanan:
+              </p>
+              <div className="flex items-center justify-between bg-slate-950 px-3.5 py-2.5 rounded-xl border border-amber-500/40 text-amber-300 font-mono text-sm font-bold tracking-wider">
+                <span>{registeredRecoveryKey}</span>
                 <button
                   type="button"
-                  onClick={() => setRegOtpCode(regDevCode)}
-                  className="px-2.5 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 text-[11px] font-bold shrink-0 cursor-pointer"
+                  onClick={() => {
+                    navigator.clipboard.writeText(registeredRecoveryKey);
+                    setCopiedRecoveryKey(true);
+                    setTimeout(() => setCopiedRecoveryKey(false), 2000);
+                  }}
+                  className="px-2.5 py-1 text-xs font-sans font-bold bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 rounded-lg transition cursor-pointer flex items-center gap-1"
                 >
-                  Isi Cepat
+                  {copiedRecoveryKey ? <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                  <span>{copiedRecoveryKey ? 'Disalin!' : 'Salin'}</span>
                 </button>
               </div>
-            )}
+            </div>
 
-            <form onSubmit={handleRegisterCompleteSubmit} className="space-y-4">
-              <div>
-                <label className="block text-xs font-semibold text-slate-300 text-center mb-2">
-                  Masukkan 6 Digit Kode Aktivasi
-                </label>
-                <input
-                  type="text"
-                  maxLength={6}
-                  value={regOtpCode}
-                  onChange={e => setRegOtpCode(e.target.value.replace(/\D/g, ''))}
-                  placeholder="000000"
-                  autoFocus
-                  className="w-full py-3.5 bg-slate-950 border border-slate-700 rounded-2xl text-white text-center text-2xl font-bold tracking-[10px] font-mono focus:outline-hidden focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-3 pt-3">
-                <button
-                  type="button"
-                  onClick={() => { setShowRegOtpModal(false); setRegOtpCode(''); }}
-                  className="py-2.5 rounded-xl text-xs font-bold text-slate-400 hover:text-white hover:bg-slate-800 transition cursor-pointer"
-                >
-                  Batal
-                </button>
-                <button
-                  type="submit"
-                  disabled={loading}
-                  className="py-2.5 rounded-xl text-xs font-bold bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white transition shadow-lg shadow-emerald-600/30 flex items-center justify-center gap-1.5 cursor-pointer"
-                >
-                  {loading ? (
-                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                  ) : (
-                    <>
-                      <span>Aktifkan Toko</span>
-                      <CheckCircle2 className="w-4 h-4" />
-                    </>
-                  )}
-                </button>
-              </div>
-            </form>
+            <button
+              type="button"
+              onClick={() => {
+                setShowRegisterSuccessModal(false);
+              }}
+              className="w-full py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow-lg shadow-emerald-600/30 flex items-center justify-center gap-2 cursor-pointer transition"
+            >
+              <span>Buka Kasir Sekarang</span>
+              <ArrowRight className="w-4 h-4" />
+            </button>
           </div>
         </div>
       )}
 
-      {/* MODAL 3: LUPA PASSWORD / RESET KATA SANDI */}
-      {showForgotModal && (
+      {/* MODAL 3: PUSAT PEMULIHAN AKUN (LUPA SANDI & PIN) */}
+      {showRecoveryModal && (
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-md w-full p-6 sm:p-8 shadow-2xl animate-scale-up relative">
-            <div className="flex items-center gap-3 mb-5">
-              <div className="w-10 h-10 rounded-xl bg-blue-600/20 text-blue-400 flex items-center justify-center shrink-0">
-                <KeyRound className="w-5 h-5" />
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-lg w-full p-6 sm:p-7 shadow-2xl animate-scale-up relative">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800 mb-4">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-blue-600/20 text-blue-400 flex items-center justify-center">
+                  <KeyRound className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-white">Pusat Pemulihan Akun Toko</h3>
+                  <p className="text-[11px] text-slate-400">Pilih metode pemulihan mandiri akun Anda</p>
+                </div>
               </div>
-              <div>
-                <h3 className="text-base font-bold text-white">Reset Kata Sandi Akun</h3>
-                <p className="text-xs text-slate-400">
-                  {forgotStep === 1 ? 'Langkah 1: Verifikasi identitas email toko' : 'Langkah 2: Buat kata sandi baru'}
-                </p>
-              </div>
+              <button
+                type="button"
+                onClick={() => setShowRecoveryModal(false)}
+                className="text-slate-400 hover:text-white p-1 rounded-lg"
+              >
+                ✕
+              </button>
             </div>
 
-            {forgotDevCode && forgotStep === 2 && (
-              <div className="mb-4 p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs flex items-center justify-between">
-                <span>Kode OTP Reset: <strong className="font-mono text-white">{forgotDevCode}</strong></span>
-                <button
-                  type="button"
-                  onClick={() => setForgotOtpCode(forgotDevCode)}
-                  className="px-2 py-0.5 rounded bg-amber-500/20 text-[10px] font-bold"
-                >
-                  Isi
-                </button>
+            {/* Tab Navigasi Pemulihan */}
+            <div className="grid grid-cols-3 gap-1 p-1 bg-slate-950 rounded-xl mb-4 text-xs font-semibold">
+              <button
+                type="button"
+                onClick={() => { setRecoveryTab('forgot_password'); setRecoveryError(null); setRecoverySuccessMsg(null); }}
+                className={`py-2 px-2 rounded-lg text-center transition cursor-pointer text-[11px] ${
+                  recoveryTab === 'forgot_password' ? 'bg-blue-600 text-white font-bold' : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                Lupa Password
+              </button>
+              <button
+                type="button"
+                onClick={() => { setRecoveryTab('forgot_pin'); setRecoveryError(null); setRecoverySuccessMsg(null); }}
+                className={`py-2 px-2 rounded-lg text-center transition cursor-pointer text-[11px] ${
+                  recoveryTab === 'forgot_pin' ? 'bg-emerald-600 text-white font-bold' : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                Lupa PIN
+              </button>
+              <button
+                type="button"
+                onClick={() => { setRecoveryTab('emergency'); setRecoveryError(null); setRecoverySuccessMsg(null); }}
+                className={`py-2 px-2 rounded-lg text-center transition cursor-pointer text-[11px] ${
+                  recoveryTab === 'emergency' ? 'bg-amber-600 text-white font-bold' : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                Darurat / CS
+              </button>
+            </div>
+
+            {recoveryError && (
+              <div className="mb-3.5 p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0" />
+                <span>{recoveryError}</span>
               </div>
             )}
 
-            {forgotStep === 1 ? (
-              <form onSubmit={handleForgotSendOtp} className="space-y-4">
+            {recoverySuccessMsg && (
+              <div className="mb-3.5 p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4 shrink-0" />
+                <span>{recoverySuccessMsg}</span>
+              </div>
+            )}
+
+            {/* TAB 1: LUPA PASSWORD -> RESET PAKAI PIN 6-DIGIT */}
+            {recoveryTab === 'forgot_password' && (
+              <form onSubmit={handleRecoverPasswordSubmit} className="space-y-3">
+                <div className="p-2.5 rounded-xl bg-blue-500/10 border border-blue-500/20 text-blue-300 text-[11px]">
+                  💡 <strong>Reset via PIN:</strong> Anda dapat mengatur ulang kata sandi baru menggunakan 6-Digit PIN Keamanan Toko Anda.
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-300 mb-1">ID Toko *</label>
+                    <input
+                      type="text"
+                      value={recoveryTenantId}
+                      onChange={e => setRecoveryTenantId(e.target.value)}
+                      placeholder="default"
+                      className="w-full px-3 py-1.5 bg-slate-950 border border-slate-800 rounded-xl text-white text-xs font-mono"
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-300 mb-1">Username / No HP *</label>
+                    <input
+                      type="text"
+                      value={recoveryUsername}
+                      onChange={e => setRecoveryUsername(e.target.value)}
+                      placeholder="owner"
+                      className="w-full px-3 py-1.5 bg-slate-950 border border-slate-800 rounded-xl text-white text-xs"
+                      required
+                    />
+                  </div>
+                </div>
+
                 <div>
-                  <label className="block text-xs font-semibold text-slate-300 mb-1.5">
-                    Nama / ID Toko
+                  <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                    6-Digit PIN Keamanan Toko *
                   </label>
                   <input
-                    type="text"
-                    value={forgotTenantId}
-                    onChange={e => setForgotTenantId(e.target.value)}
-                    placeholder="Contoh: default atau ID Toko Anda"
-                    className="w-full px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-white text-sm focus:outline-hidden focus:border-blue-500 font-mono"
+                    type="password"
+                    maxLength={6}
+                    value={recoveryPin}
+                    onChange={e => setRecoveryPin(e.target.value.replace(/\D/g, ''))}
+                    placeholder="Contoh: 123456"
+                    className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-white text-xs font-mono tracking-widest font-bold"
                     required
                   />
                 </div>
 
-                <div>
-                  <label className="block text-xs font-semibold text-slate-300 mb-1.5">
-                    Email Terdaftar
-                  </label>
-                  <input
-                    type="email"
-                    value={forgotEmail}
-                    onChange={e => setForgotEmail(e.target.value)}
-                    placeholder="nama@email.com"
-                    className="w-full px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-white text-sm focus:outline-hidden focus:border-blue-500"
-                    required
-                  />
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-300 mb-1">Kata Sandi Baru *</label>
+                    <input
+                      type="password"
+                      value={recoveryNewPassword}
+                      onChange={e => setRecoveryNewPassword(e.target.value)}
+                      placeholder="Min 6 karakter"
+                      className="w-full px-3 py-1.5 bg-slate-950 border border-slate-800 rounded-xl text-white text-xs"
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-300 mb-1">Konfirmasi Sandi *</label>
+                    <input
+                      type="password"
+                      value={recoveryConfirmPassword}
+                      onChange={e => setRecoveryConfirmPassword(e.target.value)}
+                      placeholder="Ulangi sandi"
+                      className="w-full px-3 py-1.5 bg-slate-950 border border-slate-800 rounded-xl text-white text-xs"
+                      required
+                    />
+                  </div>
                 </div>
 
-                <div className="flex items-center justify-end gap-2.5 pt-2">
+                <div className="pt-2 flex justify-end gap-2">
                   <button
                     type="button"
-                    onClick={() => setShowForgotModal(false)}
-                    className="px-4 py-2.5 rounded-xl text-xs font-semibold text-slate-400 hover:text-white"
+                    onClick={() => setShowRecoveryModal(false)}
+                    className="px-4 py-2 rounded-xl text-xs text-slate-400 hover:text-white"
                   >
                     Batal
                   </button>
                   <button
                     type="submit"
-                    disabled={loading}
-                    className="px-5 py-2.5 rounded-xl text-xs font-bold bg-blue-600 hover:bg-blue-500 text-white transition shadow-md shadow-blue-600/30 cursor-pointer"
+                    disabled={recoveryLoading}
+                    className="px-5 py-2 rounded-xl text-xs font-bold bg-blue-600 hover:bg-blue-500 text-white shadow-xs cursor-pointer"
                   >
-                    {loading ? 'Mengirim OTP...' : 'Kirim Kode OTP'}
+                    {recoveryLoading ? 'Menyimpan...' : 'Perbarui Kata Sandi'}
                   </button>
                 </div>
               </form>
-            ) : (
-              <form onSubmit={handleForgotResetSubmit} className="space-y-3.5">
-                <div>
-                  <label className="block text-xs font-semibold text-slate-300 mb-1">
-                    Kode OTP 6 Digit
-                  </label>
-                  <input
-                    type="text"
-                    maxLength={6}
-                    value={forgotOtpCode}
-                    onChange={e => setForgotOtpCode(e.target.value.replace(/\D/g, ''))}
-                    placeholder="000000"
-                    className="w-full px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-white text-center font-mono text-lg font-bold tracking-widest focus:outline-hidden focus:border-blue-500"
-                    required
-                  />
+            )}
+
+            {/* TAB 2: LUPA PIN -> RESET PAKAI KATA SANDI */}
+            {recoveryTab === 'forgot_pin' && (
+              <form onSubmit={handleRecoverPinSubmit} className="space-y-3">
+                <div className="p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 text-[11px]">
+                  💡 <strong>Reset PIN via Password:</strong> Masukkan kata sandi akun Anda untuk membuat 6-Digit PIN Keamanan baru.
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-300 mb-1">ID Toko *</label>
+                    <input
+                      type="text"
+                      value={recoveryTenantId}
+                      onChange={e => setRecoveryTenantId(e.target.value)}
+                      placeholder="default"
+                      className="w-full px-3 py-1.5 bg-slate-950 border border-slate-800 rounded-xl text-white text-xs font-mono"
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-300 mb-1">Username / No HP *</label>
+                    <input
+                      type="text"
+                      value={recoveryUsername}
+                      onChange={e => setRecoveryUsername(e.target.value)}
+                      placeholder="owner"
+                      className="w-full px-3 py-1.5 bg-slate-950 border border-slate-800 rounded-xl text-white text-xs"
+                      required
+                    />
+                  </div>
                 </div>
 
                 <div>
-                  <label className="block text-xs font-semibold text-slate-300 mb-1">
-                    Kata Sandi Baru (Min 6 Karakter)
-                  </label>
+                  <label className="block text-[11px] font-semibold text-slate-300 mb-1">Kata Sandi Akun Saat Ini *</label>
                   <input
                     type="password"
-                    value={forgotNewPassword}
-                    onChange={e => setForgotNewPassword(e.target.value)}
-                    placeholder="Masukkan sandi baru"
-                    className="w-full px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-white text-sm focus:outline-hidden focus:border-blue-500"
+                    value={recoveryCurrentPassword}
+                    onChange={e => setRecoveryCurrentPassword(e.target.value)}
+                    placeholder="Masukkan kata sandi akun Anda"
+                    className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-white text-xs"
                     required
                   />
                 </div>
 
-                <div>
-                  <label className="block text-xs font-semibold text-slate-300 mb-1">
-                    Konfirmasi Kata Sandi Baru
-                  </label>
-                  <input
-                    type="password"
-                    value={forgotConfirmPassword}
-                    onChange={e => setForgotConfirmPassword(e.target.value)}
-                    placeholder="Ulangi sandi baru"
-                    className="w-full px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-white text-sm focus:outline-hidden focus:border-blue-500"
-                    required
-                  />
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-300 mb-1">PIN Baru (6 Digit) *</label>
+                    <input
+                      type="password"
+                      maxLength={6}
+                      value={recoveryNewPin}
+                      onChange={e => setRecoveryNewPin(e.target.value.replace(/\D/g, ''))}
+                      placeholder="Contoh: 123456"
+                      className="w-full px-3 py-1.5 bg-slate-950 border border-slate-800 rounded-xl text-white text-xs font-mono tracking-widest font-bold"
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-300 mb-1">Konfirmasi PIN *</label>
+                    <input
+                      type="password"
+                      maxLength={6}
+                      value={recoveryConfirmPin}
+                      onChange={e => setRecoveryConfirmPin(e.target.value.replace(/\D/g, ''))}
+                      placeholder="Ulangi 6 PIN"
+                      className="w-full px-3 py-1.5 bg-slate-950 border border-slate-800 rounded-xl text-white text-xs font-mono tracking-widest font-bold"
+                      required
+                    />
+                  </div>
                 </div>
 
-                <div className="flex items-center justify-between pt-2">
+                <div className="pt-2 flex justify-end gap-2">
                   <button
                     type="button"
-                    onClick={() => setForgotStep(1)}
-                    className="text-xs text-slate-400 hover:text-white flex items-center gap-1 cursor-pointer"
+                    onClick={() => setShowRecoveryModal(false)}
+                    className="px-4 py-2 rounded-xl text-xs text-slate-400 hover:text-white"
                   >
-                    <ArrowLeft className="w-3.5 h-3.5" />
-                    Kembali
+                    Batal
                   </button>
                   <button
                     type="submit"
-                    disabled={loading}
-                    className="px-5 py-2.5 rounded-xl text-xs font-bold bg-blue-600 hover:bg-blue-500 text-white transition shadow-md shadow-blue-600/30 cursor-pointer"
+                    disabled={recoveryLoading}
+                    className="px-5 py-2 rounded-xl text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white shadow-xs cursor-pointer"
                   >
-                    {loading ? 'Menyimpan...' : 'Simpan Kata Sandi'}
+                    {recoveryLoading ? 'Menyimpan...' : 'Perbarui PIN Keamanan'}
                   </button>
                 </div>
               </form>
+            )}
+
+            {/* TAB 3: DARURAT / LUPA KEDUANYA */}
+            {recoveryTab === 'emergency' && (
+              <div className="space-y-4">
+                <form onSubmit={handleRecoverEmergencySubmit} className="space-y-3">
+                  <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-300 text-[11px]">
+                    ⚠️ <strong>Pemulihan Darurat:</strong> Gunakan Kode Pemulihan Darurat (format: <code>RCV-XXXX-XXXX-XXXX</code>) yang diterbitkan saat pendaftaran toko.
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-300 mb-1">ID Toko *</label>
+                    <input
+                      type="text"
+                      value={recoveryTenantId}
+                      onChange={e => setRecoveryTenantId(e.target.value)}
+                      placeholder="Contoh: toko-berkah"
+                      className="w-full px-3 py-1.5 bg-slate-950 border border-slate-800 rounded-xl text-white text-xs font-mono"
+                      required
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                      Kode Pemulihan Darurat (Master Key) *
+                    </label>
+                    <input
+                      type="text"
+                      value={emergencyKey}
+                      onChange={e => setEmergencyKey(e.target.value.toUpperCase())}
+                      placeholder="RCV-XXXX-XXXX-XXXX"
+                      className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-white text-xs font-mono tracking-wider font-bold"
+                      required
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-300 mb-1">Kata Sandi Baru (Opsional)</label>
+                      <input
+                        type="password"
+                        value={recoveryNewPassword}
+                        onChange={e => setRecoveryNewPassword(e.target.value)}
+                        placeholder="Min 6 karakter"
+                        className="w-full px-3 py-1.5 bg-slate-950 border border-slate-800 rounded-xl text-white text-xs"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-300 mb-1">PIN Baru 6-Digit (Opsional)</label>
+                      <input
+                        type="password"
+                        maxLength={6}
+                        value={recoveryNewPin}
+                        onChange={e => setRecoveryNewPin(e.target.value.replace(/\D/g, ''))}
+                        placeholder="6 digit angka"
+                        className="w-full px-3 py-1.5 bg-slate-950 border border-slate-800 rounded-xl text-white text-xs font-mono tracking-widest"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="pt-1 flex justify-end">
+                    <button
+                      type="submit"
+                      disabled={recoveryLoading}
+                      className="w-full py-2.5 rounded-xl text-xs font-bold bg-amber-600 hover:bg-amber-500 text-white shadow-xs cursor-pointer"
+                    >
+                      {recoveryLoading ? 'Memulihkan Akun...' : 'Pulihkan Akun Toko'}
+                    </button>
+                  </div>
+                </form>
+
+                {/* Bantuan WhatsApp CS */}
+                <div className="pt-3 border-t border-slate-800 text-center space-y-2">
+                  <p className="text-[11px] text-slate-400">
+                    Tidak memiliki Kode Pemulihan Darurat? Hubungi Tim Dukungan Resmi:
+                  </p>
+                  <a
+                    href={`https://wa.me/628123456789?text=${encodeURIComponent(
+                      `Halo Admin iPay POS, saya pemilik toko (ID: ${recoveryTenantId || 'default'}), membutuhkan bantuan pemulihan akses akun toko karena lupa password dan PIN.`
+                    )}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-2 px-4 py-2 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 rounded-xl text-xs font-bold transition"
+                  >
+                    <MessageSquare className="w-4 h-4" />
+                    <span>Hubungi CS / Admin iPay via WhatsApp</span>
+                  </a>
+                </div>
+              </div>
             )}
           </div>
         </div>
@@ -994,7 +1233,7 @@ export const LoginPage: React.FC = () => {
 
       {/* Production Footer */}
       <footer className="w-full text-center py-4 border-t border-slate-900 text-[11px] text-slate-400 bg-slate-950/60 backdrop-blur-xs relative z-10">
-        &copy; 2026 POS iPay Hybrid System. Dilindungi oleh Enkripsi Token Bearer & Autentikasi Email OTP Mandiri.
+        &copy; 2026 POS iPay Hybrid System. Dilindungi oleh Enkripsi Token Bearer & Autentikasi 2-Lapis Standar m-Banking.
       </footer>
     </div>
   );

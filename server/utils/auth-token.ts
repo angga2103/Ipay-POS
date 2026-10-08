@@ -102,6 +102,85 @@ export interface OtpSessionPayload {
   exp: number; // unix timestamp in seconds
 }
 
+export interface PinSessionPayload {
+  tenantId: string;
+  userId: number;
+  username: string;
+  role: string;
+  storeName?: string;
+  exp: number;
+}
+
+/**
+ * Buat token sesi verifikasi PIN sementara (10 menit)
+ */
+export function createPinSessionToken(data: {
+  tenantId: string;
+  userId: number;
+  username: string;
+  role: string;
+  storeName?: string;
+}): string {
+  const header = { alg: 'HS256', typ: 'PIN_AUTH' };
+  const exp = Math.floor(Date.now() / 1000) + (10 * 60); // 10 menit
+  const payload: PinSessionPayload = {
+    ...data,
+    exp,
+  };
+
+  const b64Header = Buffer.from(JSON.stringify(header)).toString('base64url');
+  const b64Payload = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  const signature = crypto.createHmac('sha256', JWT_SECRET).update(`${b64Header}.${b64Payload}`).digest('base64url');
+
+  return `${b64Header}.${b64Payload}.${signature}`;
+}
+
+/**
+ * Verifikasi token sesi PIN sementara
+ */
+export function verifyPinSessionToken(token: string): PinSessionPayload | null {
+  if (!token || typeof token !== 'string') return null;
+  const parts = token.split('.');
+  if (parts.length !== 3) return null;
+
+  const [b64Header, b64Payload, signature] = parts;
+  const expectedSig = crypto.createHmac('sha256', JWT_SECRET).update(`${b64Header}.${b64Payload}`).digest('base64url');
+
+  if (signature.length !== expectedSig.length || !crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expectedSig))) {
+    return null;
+  }
+
+  try {
+    const payloadStr = Buffer.from(b64Payload, 'base64url').toString('utf8');
+    const payload: PinSessionPayload = JSON.parse(payloadStr);
+
+    const nowSec = Math.floor(Date.now() / 1000);
+    if (payload.exp && payload.exp < nowSec) {
+      return null;
+    }
+
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Hasilkan Kode Pemulihan Darurat Toko (format: RCV-XXXX-XXXX-XXXX)
+ */
+export function generateRecoveryKey(): string {
+  const chars = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ'; // base32 tanpa 0, 1, I, O agar tidak membingungkan saat dicatat
+  const pick = (len: number) => {
+    let res = '';
+    const bytes = crypto.randomBytes(len);
+    for (let i = 0; i < len; i++) {
+      res += chars[bytes[i] % chars.length];
+    }
+    return res;
+  };
+  return `RCV-${pick(4)}-${pick(4)}-${pick(4)}`;
+}
+
 /**
  * Buat token sesi OTP sementara (15 menit)
  */
@@ -156,3 +235,4 @@ export function verifyOtpSessionToken(token: string): OtpSessionPayload | null {
     return null;
   }
 }
+

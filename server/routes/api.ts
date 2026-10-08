@@ -2,7 +2,7 @@ import { Router, Request, Response } from 'express';
 import crypto from 'crypto';
 import db from '../db/database';
 import { getTenantDatabase, tenantContext, getAllTenantSummaries, sanitizeTenantId, defaultDb, getAllTenantIds } from '../db/tenant';
-import { createAuthToken, verifySecret, hashSecret, createOtpSessionToken, verifyOtpSessionToken } from '../utils/auth-token';
+import { createAuthToken, verifySecret, hashSecret, createOtpSessionToken, verifyOtpSessionToken, createPinSessionToken, verifyPinSessionToken, generateRecoveryKey } from '../utils/auth-token';
 import { AccountingService } from '../services/accounting';
 import { PPOBService } from '../services/ppob';
 import { InventoryService } from '../services/inventory';
@@ -49,12 +49,12 @@ apiRouter.get('/tenant/list', (_req: Request, res: Response) => {
   }
 });
 
-// Step 1 Login Mandiri: Cek Kredensial Toko + Username/Email + Password, lalu Kirim OTP ke Email
+// Step 1 Login Mandiri (Skema 1): Cek Kredensial Toko + Username/No HP + Password
 apiRouter.post('/auth/login-step1', async (req: Request, res: Response) => {
   try {
     const { tenantId, username, password } = req.body;
     if (!username || !password) {
-      return res.status(400).json({ error: 'Username/Email dan kata sandi wajib diisi' });
+      return res.status(400).json({ error: 'Username/No HP/Email dan kata sandi wajib diisi' });
     }
 
     const tId = sanitizeTenantId(tenantId || req.tenantId || 'default');
@@ -64,75 +64,187 @@ apiRouter.post('/auth/login-step1', async (req: Request, res: Response) => {
     const user = targetDb.prepare(`
       SELECT id, username, password, name, role, pin, email, phone, is_active 
       FROM users 
-      WHERE LOWER(username) = ? OR (email IS NOT NULL AND LOWER(email) = ?)
+      WHERE LOWER(username) = ? 
+         OR (email IS NOT NULL AND LOWER(email) = ?) 
+         OR (phone IS NOT NULL AND phone = ?)
+         OR (? = 'owner' AND role = 'owner')
       LIMIT 1
-    `).get(cleanInput, cleanInput) as any;
+    `).get(cleanInput, cleanInput, cleanInput, cleanInput) as any;
 
     if (!user || !verifySecret(password, user.password)) {
-      return res.status(401).json({ error: 'ID Toko, Username/Email, atau kata sandi tidak cocok' });
+      return res.status(401).json({ error: 'ID Toko, Username/No HP, atau kata sandi tidak cocok' });
     }
     if (user.is_active === 0) {
       return res.status(403).json({ error: 'Akun operator ini telah dinonaktifkan oleh Administrator' });
     }
 
-    // Auto-associate email jika pengguna login menggunakan email dan data email sebelumnya kosong
-    let userEmail = user.email;
-    if (!userEmail && cleanInput.includes('@')) {
-      targetDb.prepare('UPDATE users SET email = ? WHERE id = ?').run(cleanInput, user.id);
-      userEmail = cleanInput;
-    } else if (!userEmail) {
-      userEmail = `${user.username}@toko.local`;
-      targetDb.prepare('UPDATE users SET email = ? WHERE id = ?').run(userEmail, user.id);
-    }
-
     const storeNameRow = targetDb.prepare("SELECT value FROM settings WHERE key = 'store_name'").get() as any;
     const storeName = storeNameRow?.value || (tId === 'default' ? 'Toko Utama' : `Toko ${tId}`);
 
-    const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
-    const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
-
-    targetDb.prepare(`
-      INSERT INTO email_otp_codes (email, tenant_id, otp_code, purpose, expires_at)
-      VALUES (?, ?, ?, 'LOGIN', ?)
-    `).run(userEmail, tId, otpCode, expiresAt);
-
-    try {
-      defaultDb.prepare(`
-        INSERT INTO email_otp_codes (email, tenant_id, otp_code, purpose, expires_at)
-        VALUES (?, ?, ?, 'LOGIN', ?)
-      `).run(userEmail, tId, otpCode, expiresAt);
-    } catch {}
-
-    const mailResult = await MailerService.sendOtpEmail({
-      to: userEmail,
-      otpCode,
-      purpose: 'LOGIN',
-      storeName,
-      userName: user.name,
-    });
-
-    const tempSessionToken = createOtpSessionToken({
+    // Generate PIN Session Token (10 menit)
+    const pinSessionToken = createPinSessionToken({
       tenantId: tId,
       userId: user.id,
-      email: userEmail,
-      purpose: 'LOGIN',
+      username: user.username,
+      role: user.role,
       storeName,
     });
 
     res.json({
       success: true,
-      requiresOtp: true,
-      tempSessionToken,
-      maskedEmail: maskEmail(userEmail),
+      requiresPin: true,
+      tempSessionToken: pinSessionToken,
       tenantId: tId,
       storeName,
-      simulated: mailResult.simulated,
-      devOtp: mailResult.simulated ? otpCode : undefined,
+      userName: user.name,
+      hasPin: Boolean(user.pin),
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
 });
+
+// Step 2 Login (Skema 1): Verifikasi 6-Digit PIN Keamanan Toko & Terbitkan Token Akses JWT
+apiRouter.post('/auth/login-verify-pin', (req: Request, res: Response) => {
+  try {
+    const { tempSessionToken, pin } = req.body;
+    if (!tempSessionToken || !pin) {
+      return res.status(400).json({ error: 'Sesi verifikasi dan PIN keamanan 6-digit wajib diisi' });
+    }
+
+    const payload = verifyPinSessionToken(tempSessionToken);
+    if (!payload || !payload.userId) {
+      return res.status(400).json({ error: 'Sesi verifikasi PIN telah kedaluwarsa. Silakan masukkan kata sandi kembali.' });
+    }
+
+    const targetDb = getTenantDatabase(payload.tenantId);
+    const user = targetDb.prepare(`
+      SELECT id, username, name, role, email, phone, pin, is_active FROM users WHERE id = ?
+    `).get(payload.userId) as any;
+
+    if (!user || user.is_active === 0) {
+      return res.status(403).json({ error: 'Akun operator tidak aktif' });
+    }
+
+    const cleanPin = String(pin).trim();
+    if (!user.pin) {
+      // Jika user belum memiliki PIN, simpan PIN ini sebagai PIN keamanan pertama
+      targetDb.prepare('UPDATE users SET pin = ? WHERE id = ?').run(hashSecret(cleanPin), user.id);
+    } else if (!verifySecret(cleanPin, user.pin)) {
+      return res.status(401).json({ error: '6-Digit PIN Keamanan Toko salah' });
+    }
+
+    const token = createAuthToken({
+      tenantId: payload.tenantId,
+      userId: user.id,
+      username: user.username,
+      role: user.role,
+    });
+
+    res.json({
+      success: true,
+      token,
+      tenantId: payload.tenantId,
+      user: {
+        id: user.id,
+        username: user.username,
+        name: user.name,
+        role: user.role,
+        email: user.email,
+        phone: user.phone,
+      },
+      storeName: payload.storeName,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Pendaftaran Toko Baru (Skema 1 Mandiri: Password + 6-Digit PIN + Terbitkan Recovery Key)
+apiRouter.post('/auth/register-store', async (req: Request, res: Response) => {
+  try {
+    const { storeName, ownerName, username, phone, email, password, pin } = req.body;
+    if (!storeName || !ownerName || !password || !pin) {
+      return res.status(400).json({ error: 'Nama toko, nama pemilik, kata sandi, dan 6-digit PIN wajib diisi' });
+    }
+    if (password.length < 6) {
+      return res.status(400).json({ error: 'Kata sandi minimal 6 karakter' });
+    }
+    const cleanPin = String(pin).trim();
+    if (!/^\d{6}$/.test(cleanPin)) {
+      return res.status(400).json({ error: 'PIN keamanan harus berupa 6 digit angka' });
+    }
+
+    const cleanUser = (username ? username.trim().toLowerCase().replace(/\s+/g, '') : 'owner') || 'owner';
+
+    // Buat slug tenant ID dari nama toko
+    let baseSlug = storeName.trim().toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '') || 'toko';
+
+    const existingTenants = getAllTenantIds();
+    if (existingTenants.includes(baseSlug)) {
+      baseSlug = `${baseSlug}-${Math.floor(100 + Math.random() * 900)}`;
+    }
+
+    const recoveryKey = generateRecoveryKey();
+    const newTenantDb = getTenantDatabase(baseSlug, storeName.trim());
+
+    // Update settings toko
+    const upsertSetting = newTenantDb.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)');
+    upsertSetting.run('store_name', storeName.trim());
+    upsertSetting.run('tenant_id', baseSlug);
+    if (phone) upsertSetting.run('store_phone', phone.trim());
+    if (email) upsertSetting.run('store_email', email.trim());
+    upsertSetting.run('recovery_key', recoveryKey);
+    upsertSetting.run('recovery_key_created_at', new Date().toISOString());
+
+    const hashedPass = hashSecret(password);
+    const hashedPin = hashSecret(cleanPin);
+
+    let ownerUser = newTenantDb.prepare("SELECT id FROM users WHERE role = 'owner' LIMIT 1").get() as any;
+    if (ownerUser) {
+      newTenantDb.prepare(`
+        UPDATE users 
+        SET username = ?, name = ?, email = ?, phone = ?, password = ?, pin = ?, is_active = 1
+        WHERE id = ?
+      `).run(cleanUser, ownerName.trim(), email?.trim() || null, phone?.trim() || null, hashedPass, hashedPin, ownerUser.id);
+    } else {
+      newTenantDb.prepare(`
+        INSERT INTO users (username, password, name, role, pin, email, phone, is_active)
+        VALUES (?, ?, ?, 'owner', ?, ?, ?, 1)
+      `).run(cleanUser, hashedPass, ownerName.trim(), hashedPin, email?.trim() || null, phone?.trim() || null);
+      ownerUser = newTenantDb.prepare("SELECT id FROM users WHERE role = 'owner' LIMIT 1").get() as any;
+    }
+
+    const token = createAuthToken({
+      tenantId: baseSlug,
+      userId: ownerUser.id,
+      username: cleanUser,
+      role: 'owner',
+    });
+
+    res.json({
+      success: true,
+      token,
+      tenantId: baseSlug,
+      storeName: storeName.trim(),
+      recoveryKey,
+      user: {
+        id: ownerUser.id,
+        username: cleanUser,
+        name: ownerName.trim(),
+        role: 'owner',
+        email: email?.trim(),
+        phone: phone?.trim(),
+      },
+      message: `Toko "${storeName}" berhasil didaftarkan! Simpan kode pemulihan Anda.`,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 
 // Step 2 Login Mandiri: Verifikasi Kode OTP 6-Digit & Terbitkan Token Akses JWT
 apiRouter.post('/auth/login-verify-otp', (req: Request, res: Response) => {
@@ -511,6 +623,235 @@ apiRouter.post('/auth/change-password', (req: Request, res: Response) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+// Ubah PIN Keamanan Toko (6 Digit) untuk Owner / Operator yang Sedang Login
+apiRouter.post('/auth/change-pin', (req: Request, res: Response) => {
+  try {
+    if (!req.user || !req.user.userId) {
+      return res.status(401).json({ error: 'Sesi login diperlukan untuk mengubah PIN' });
+    }
+    const { oldPin, newPin } = req.body;
+    if (!newPin) {
+      return res.status(400).json({ error: 'PIN baru 6-digit wajib diisi' });
+    }
+    const cleanNewPin = String(newPin).trim();
+    if (!/^\d{6}$/.test(cleanNewPin)) {
+      return res.status(400).json({ error: 'PIN baru harus terdiri dari 6 digit angka' });
+    }
+
+    const targetDb = req.tenantDb || db;
+    const user = targetDb.prepare('SELECT id, pin FROM users WHERE id = ?').get(req.user.userId) as any;
+    if (!user) {
+      return res.status(404).json({ error: 'Pengguna tidak ditemukan' });
+    }
+
+    if (user.pin && oldPin) {
+      if (!verifySecret(String(oldPin).trim(), user.pin)) {
+        return res.status(400).json({ error: 'PIN saat ini (lama) tidak sesuai' });
+      }
+    }
+
+    targetDb.prepare('UPDATE users SET pin = ? WHERE id = ?').run(hashSecret(cleanNewPin), user.id);
+    res.json({ success: true, message: '6-Digit PIN Keamanan Anda berhasil diperbarui' });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Pemulihan Akun Skema 1: Lupa Password (Reset Menggunakan 6-Digit PIN Keamanan)
+apiRouter.post('/auth/recover-password-with-pin', (req: Request, res: Response) => {
+  try {
+    const { tenantId, username, pin, newPassword } = req.body;
+    if (!username || !pin || !newPassword) {
+      return res.status(400).json({ error: 'Username/No HP, PIN 6-digit, dan kata sandi baru wajib diisi' });
+    }
+    if (newPassword.length < 6) {
+      return res.status(400).json({ error: 'Kata sandi baru minimal 6 karakter' });
+    }
+    const cleanPin = String(pin).trim();
+    const tId = sanitizeTenantId(tenantId || 'default');
+    let targetDb = getTenantDatabase(tId);
+    const cleanInput = username.trim().toLowerCase();
+
+    let user = targetDb.prepare(`
+      SELECT id, username, pin, role FROM users 
+      WHERE LOWER(username) = ? 
+         OR (email IS NOT NULL AND LOWER(email) = ?) 
+         OR (phone IS NOT NULL AND phone = ?)
+         OR (? = 'owner' AND role = 'owner')
+      LIMIT 1
+    `).get(cleanInput, cleanInput, cleanInput, cleanInput) as any;
+
+    if (!user) {
+      const allTenants = getAllTenantIds();
+      for (const otherTId of allTenants) {
+        if (otherTId === tId) continue;
+        const otherDb = getTenantDatabase(otherTId);
+        const match = otherDb.prepare(`
+          SELECT id, username, pin, role FROM users 
+          WHERE LOWER(username) = ? 
+             OR (email IS NOT NULL AND LOWER(email) = ?) 
+             OR (phone IS NOT NULL AND phone = ?)
+             OR (? = 'owner' AND role = 'owner')
+          LIMIT 1
+        `).get(cleanInput, cleanInput, cleanInput, cleanInput) as any;
+        if (match) {
+          user = match;
+          targetDb = otherDb;
+          break;
+        }
+      }
+    }
+
+    if (!user) {
+      return res.status(404).json({ error: 'Akun dengan username atau No HP tersebut tidak ditemukan' });
+    }
+
+    if (!user.pin || !verifySecret(cleanPin, user.pin)) {
+      return res.status(401).json({ error: '6-Digit PIN Keamanan Toko tidak cocok' });
+    }
+
+    targetDb.prepare('UPDATE users SET password = ? WHERE id = ?').run(hashSecret(newPassword), user.id);
+    res.json({ success: true, message: 'Kata sandi berhasil diperbarui! Silakan masuk dengan kata sandi baru Anda.' });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Pemulihan Akun Skema 1: Lupa PIN Keamanan (Reset Menggunakan Kata Sandi Akun)
+apiRouter.post('/auth/recover-pin-with-password', (req: Request, res: Response) => {
+  try {
+    const { tenantId, username, password, newPin } = req.body;
+    if (!username || !password || !newPin) {
+      return res.status(400).json({ error: 'Username/No HP, kata sandi, dan PIN baru wajib diisi' });
+    }
+    const cleanPin = String(newPin).trim();
+    if (!/^\d{6}$/.test(cleanPin)) {
+      return res.status(400).json({ error: 'PIN baru harus berupa 6 digit angka' });
+    }
+
+    const tId = sanitizeTenantId(tenantId || 'default');
+    let targetDb = getTenantDatabase(tId);
+    const cleanInput = username.trim().toLowerCase();
+
+    let user = targetDb.prepare(`
+      SELECT id, username, password, role FROM users 
+      WHERE LOWER(username) = ? 
+         OR (email IS NOT NULL AND LOWER(email) = ?) 
+         OR (phone IS NOT NULL AND phone = ?)
+         OR (? = 'owner' AND role = 'owner')
+      LIMIT 1
+    `).get(cleanInput, cleanInput, cleanInput, cleanInput) as any;
+
+    if (!user) {
+      const allTenants = getAllTenantIds();
+      for (const otherTId of allTenants) {
+        if (otherTId === tId) continue;
+        const otherDb = getTenantDatabase(otherTId);
+        const match = otherDb.prepare(`
+          SELECT id, username, password, role FROM users 
+          WHERE LOWER(username) = ? 
+             OR (email IS NOT NULL AND LOWER(email) = ?) 
+             OR (phone IS NOT NULL AND phone = ?)
+             OR (? = 'owner' AND role = 'owner')
+          LIMIT 1
+        `).get(cleanInput, cleanInput, cleanInput, cleanInput) as any;
+        if (match) {
+          user = match;
+          targetDb = otherDb;
+          break;
+        }
+      }
+    }
+
+    if (!user) {
+      return res.status(404).json({ error: 'Akun dengan username atau No HP tersebut tidak ditemukan' });
+    }
+
+    if (!verifySecret(password, user.password)) {
+      return res.status(401).json({ error: 'Kata sandi akun salah' });
+    }
+
+    targetDb.prepare('UPDATE users SET pin = ? WHERE id = ?').run(hashSecret(cleanPin), user.id);
+    res.json({ success: true, message: 'PIN Keamanan Toko berhasil diperbarui! Silakan gunakan PIN 6-digit baru.' });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Pemulihan Darurat Skema 1: Reset Password & PIN Menggunakan Master Recovery Key
+apiRouter.post('/auth/recover-with-key', (req: Request, res: Response) => {
+  try {
+    const { tenantId, recoveryKey, newPassword, newPin } = req.body;
+    if (!tenantId || !recoveryKey) {
+      return res.status(400).json({ error: 'ID Toko dan Kode Pemulihan Darurat wajib diisi' });
+    }
+    if (!newPassword && !newPin) {
+      return res.status(400).json({ error: 'Masukkan kata sandi baru atau PIN baru untuk dipulihkan' });
+    }
+
+    const tId = sanitizeTenantId(tenantId);
+    const targetDb = getTenantDatabase(tId);
+
+    const storedKeyRow = targetDb.prepare("SELECT value FROM settings WHERE key = 'recovery_key'").get() as any;
+    const cleanKey = String(recoveryKey).trim().toUpperCase();
+
+    if (!storedKeyRow || !storedKeyRow.value || storedKeyRow.value.toUpperCase() !== cleanKey) {
+      return res.status(401).json({ error: 'Kode Pemulihan Darurat tidak cocok untuk toko ini' });
+    }
+
+    const ownerUser = targetDb.prepare("SELECT id FROM users WHERE role = 'owner' LIMIT 1").get() as any;
+    if (!ownerUser) {
+      return res.status(404).json({ error: 'Akun Owner tidak ditemukan di database toko' });
+    }
+
+    if (newPassword) {
+      if (newPassword.length < 6) return res.status(400).json({ error: 'Kata sandi minimal 6 karakter' });
+      targetDb.prepare('UPDATE users SET password = ? WHERE id = ?').run(hashSecret(newPassword), ownerUser.id);
+    }
+
+    if (newPin) {
+      const cleanPin = String(newPin).trim();
+      if (!/^\d{6}$/.test(cleanPin)) return res.status(400).json({ error: 'PIN harus 6 digit angka' });
+      targetDb.prepare('UPDATE users SET pin = ? WHERE id = ?').run(hashSecret(cleanPin), ownerUser.id);
+    }
+
+    // Terbitkan recovery key baru demi keamanan
+    const nextKey = generateRecoveryKey();
+    targetDb.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('recovery_key', ?)").run(nextKey);
+
+    res.json({
+      success: true,
+      newRecoveryKey: nextKey,
+      message: 'Akses akun toko berhasil dipulihkan! Catat kode pemulihan baru Anda.',
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Ambil Status Kode Pemulihan Toko (Hanya untuk Owner)
+apiRouter.get('/auth/recovery-info', (req: Request, res: Response) => {
+  try {
+    if (!req.user || !req.user.userId) {
+      return res.status(401).json({ error: 'Sesi login diperlukan' });
+    }
+    const targetDb = req.tenantDb || db;
+    let row = targetDb.prepare("SELECT value FROM settings WHERE key = 'recovery_key'").get() as any;
+    let recoveryKey = row?.value;
+
+    if (!recoveryKey && req.user.role === 'owner') {
+      recoveryKey = generateRecoveryKey();
+      targetDb.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('recovery_key', ?)").run(recoveryKey);
+      targetDb.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('recovery_key_created_at', ?)").run(new Date().toISOString());
+    }
+
+    res.json({ success: true, recoveryKey: recoveryKey || null });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 
 // Kompatibilitas Endpoint Lama: Login Kredensial Langsung
 apiRouter.post('/auth/login', (req: Request, res: Response) => {

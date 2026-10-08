@@ -2,8 +2,9 @@ import React, { useState, useEffect } from 'react';
 import { 
   Store, Printer, Save, Database, Download, RefreshCw, 
   Trash2, ShieldCheck, Clock, HardDrive, AlertTriangle, CheckCircle2, RotateCcw,
-  Users, UserPlus, KeyRound, Edit, Lock, Shield, Check, X
+  Users, UserPlus, KeyRound, Edit, Lock, Shield, Check, X, Eye, EyeOff, Copy
 } from 'lucide-react';
+
 import { useAuth } from '../context/AuthContext';
 import { User, UserRole } from '../types';
 
@@ -32,7 +33,7 @@ interface OperatorItem {
 }
 
 export const SettingsPage: React.FC = () => {
-  const { currentUser, refreshUsers, changePassword } = useAuth();
+  const { currentUser, refreshUsers, changePassword, changePin, fetchRecoveryInfo } = useAuth();
   const [activeTab, setActiveTab] = useState<'store' | 'operators' | 'backup' | 'security'>('store');
 
   // Change Password state
@@ -42,6 +43,18 @@ export const SettingsPage: React.FC = () => {
   const [changePassLoading, setChangePassLoading] = useState(false);
   const [changePassAlert, setChangePassAlert] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [showChangePass, setShowChangePass] = useState(false);
+
+  // Change PIN state (Skema 1)
+  const [oldPin, setOldPin] = useState('');
+  const [newPin, setNewPin] = useState('');
+  const [confirmNewPin, setConfirmNewPin] = useState('');
+  const [changePinLoading, setChangePinLoading] = useState(false);
+  const [changePinAlert, setChangePinAlert] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [showChangePin, setShowChangePin] = useState(false);
+
+  // Recovery Key state (Skema 1)
+  const [storeRecoveryKey, setStoreRecoveryKey] = useState<string | null>(null);
+  const [copiedKey, setCopiedKey] = useState(false);
 
   // Store profile & hardware
   const [storeName, setStoreName] = useState('');
@@ -275,7 +288,54 @@ export const SettingsPage: React.FC = () => {
     }
   };
 
+  const handleChangePin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newPin) {
+      setChangePinAlert({ type: 'error', text: 'PIN baru 6-digit wajib diisi' });
+      return;
+    }
+    if (!/^\d{6}$/.test(newPin)) {
+      setChangePinAlert({ type: 'error', text: 'PIN harus berupa 6 digit angka' });
+      return;
+    }
+    if (newPin !== confirmNewPin) {
+      setChangePinAlert({ type: 'error', text: 'Konfirmasi PIN baru tidak cocok' });
+      return;
+    }
+    setChangePinLoading(true);
+    setChangePinAlert(null);
+    try {
+      const res = await changePin(oldPin, newPin);
+      if (res.success) {
+        setChangePinAlert({ type: 'success', text: res.message || '6-Digit PIN keamanan berhasil diperbarui!' });
+        setOldPin('');
+        setNewPin('');
+        setConfirmNewPin('');
+        setTimeout(() => setChangePinAlert(null), 4000);
+      } else {
+        setChangePinAlert({ type: 'error', text: res.error || 'Gagal mengubah PIN' });
+      }
+    } catch (err: any) {
+      setChangePinAlert({ type: 'error', text: err.message || 'Terjadi kesalahan sistem' });
+    } finally {
+      setChangePinLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === 'security' && currentUser?.role === 'owner') {
+      fetchRecoveryInfo()
+        .then(data => {
+          if (data?.recoveryKey) setStoreRecoveryKey(data.recoveryKey);
+        })
+        .catch(err => {
+          console.error('Failed to fetch recovery info:', err);
+        });
+    }
+  }, [activeTab, currentUser]);
+
   const handleOpenEditOperator = (op: OperatorItem) => {
+
     setEditingOperator(op);
     setOperatorForm({
       username: op.username,
@@ -825,16 +885,16 @@ export const SettingsPage: React.FC = () => {
         </div>
       )}
 
-      {/* TAB 4: KEAMANAN & UBAH KATA SANDI */}
+      {/* TAB 4: KEAMANAN & UBAH KATA SANDI / PIN */}
       {activeTab === 'security' && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {/* Ubah Password Owner / Operator Aktif */}
+          {/* 1. Ubah Password Akun */}
           <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs space-y-4">
             <div className="flex items-center gap-2 pb-2 border-b border-slate-100">
               <KeyRound className="w-4 h-4 text-blue-600" />
               <div>
                 <h2 className="font-extrabold text-sm text-slate-800">Ubah Kata Sandi Akun</h2>
-                <p className="text-[11px] text-slate-500">Perbarui kata sandi akun login Anda secara mandiri</p>
+                <p className="text-[11px] text-slate-500">Perbarui kata sandi utama akun login Anda</p>
               </div>
             </div>
 
@@ -915,7 +975,7 @@ export const SettingsPage: React.FC = () => {
                 <button
                   type="submit"
                   disabled={changePassLoading}
-                  className="px-5 py-2.5 rounded-xl text-xs font-bold bg-blue-600 hover:bg-blue-700 text-white shadow-xs transition flex items-center gap-1.5 cursor-pointer"
+                  className="px-5 py-2.5 rounded-xl text-xs font-bold bg-blue-600 hover:bg-blue-700 text-white shadow-xs transition flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
                 >
                   {changePassLoading ? (
                     <>
@@ -933,44 +993,189 @@ export const SettingsPage: React.FC = () => {
             </form>
           </div>
 
-          {/* Kartu Informasi Keamanan 2-Faktor & Standar Sistem */}
+          {/* 2. Ubah 6-Digit PIN Keamanan (Skema 1) */}
           <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs space-y-4">
             <div className="flex items-center gap-2 pb-2 border-b border-slate-100">
               <ShieldCheck className="w-4 h-4 text-emerald-600" />
               <div>
-                <h2 className="font-extrabold text-sm text-slate-800">Keamanan Autentikasi Mandiri</h2>
-                <p className="text-[11px] text-slate-500">Standar keamanan akses multi-tenant POS iPay</p>
+                <h2 className="font-extrabold text-sm text-slate-800">Ubah 6-Digit PIN Keamanan Toko</h2>
+                <p className="text-[11px] text-slate-500">PIN master untuk verifikasi login 2-lapis & otorisasi kasir</p>
               </div>
             </div>
 
-            <div className="space-y-3 text-xs text-slate-600 leading-relaxed">
-              <div className="p-3 rounded-xl bg-blue-50/70 border border-blue-200 text-blue-900">
-                <div className="font-bold flex items-center gap-1.5 mb-1">
-                  <Shield className="w-4 h-4 text-blue-600" />
-                  <span>Enkripsi Kata Sandi Modern (Scrypt)</span>
+            <div className="p-3 rounded-xl bg-emerald-50/70 border border-emerald-200 flex items-center justify-between text-emerald-900 text-xs">
+              <div className="flex items-center gap-2">
+                <Lock className="w-4 h-4 text-emerald-600" />
+                <span className="font-bold">Keamanan PIN Aktif (Enkripsi Scrypt)</span>
+              </div>
+              <span className="text-[10.5px] font-mono font-bold bg-emerald-200/60 px-2 py-0.5 rounded text-emerald-800">
+                6 Digit
+              </span>
+            </div>
+
+            {changePinAlert && (
+              <div className={`p-3 rounded-xl text-xs flex items-center gap-2 ${
+                changePinAlert.type === 'success' 
+                  ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' 
+                  : 'bg-rose-50 text-rose-700 border border-rose-200'
+              }`}>
+                {changePinAlert.type === 'success' ? <Check className="w-4 h-4 shrink-0" /> : <AlertTriangle className="w-4 h-4 shrink-0" />}
+                <span>{changePinAlert.text}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleChangePin} className="space-y-3.5">
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  PIN Keamanan Saat Ini (Lama)
+                </label>
+                <div className="relative">
+                  <input
+                    type={showChangePin ? 'text' : 'password'}
+                    maxLength={6}
+                    placeholder="Kosongkan jika belum pernah disetel"
+                    value={oldPin}
+                    onChange={e => setOldPin(e.target.value.replace(/\D/g, ''))}
+                    className="w-full px-3 py-2 pr-10 rounded-xl border border-slate-300 text-xs font-mono tracking-widest font-bold focus:outline-hidden focus:border-emerald-500"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowChangePin(!showChangePin)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
+                  >
+                    {showChangePin ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
                 </div>
-                Seluruh kata sandi operator dan pemilik dienkripsi menggunakan algoritma cryptographic scrypt dengan garam acak (salt) untuk mencegah kebocoran data.
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  PIN Keamanan Baru (6 Digit Angka) *
+                </label>
+                <input
+                  type={showChangePin ? 'text' : 'password'}
+                  required
+                  maxLength={6}
+                  placeholder="Contoh: 123456"
+                  value={newPin}
+                  onChange={e => setNewPin(e.target.value.replace(/\D/g, ''))}
+                  className="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs font-mono tracking-widest font-bold focus:outline-hidden focus:border-emerald-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  Konfirmasi PIN Baru (6 Digit) *
+                </label>
+                <input
+                  type={showChangePin ? 'text' : 'password'}
+                  required
+                  maxLength={6}
+                  placeholder="Ulangi 6 digit PIN baru"
+                  value={confirmNewPin}
+                  onChange={e => setConfirmNewPin(e.target.value.replace(/\D/g, ''))}
+                  className="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs font-mono tracking-widest font-bold focus:outline-hidden focus:border-emerald-500"
+                />
+              </div>
+
+              <div className="pt-2 flex justify-end">
+                <button
+                  type="submit"
+                  disabled={changePinLoading}
+                  className="px-5 py-2.5 rounded-xl text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs transition flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                >
+                  {changePinLoading ? (
+                    <>
+                      <RefreshCw className="w-4 h-4 animate-spin" />
+                      <span>Menyimpan...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Save className="w-4 h-4" />
+                      <span>Perbarui PIN Keamanan</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+
+          {/* 3. Kode Pemulihan Darurat (Khusus Owner) */}
+          {currentUser?.role === 'owner' && (
+            <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs space-y-3">
+              <div className="flex items-center gap-2 pb-2 border-b border-slate-100">
+                <KeyRound className="w-4 h-4 text-amber-600" />
+                <div>
+                  <h2 className="font-extrabold text-sm text-slate-800">Kode Pemulihan Darurat Toko</h2>
+                  <p className="text-[11px] text-slate-500">Kunci master jika Anda lupa kata sandi DAN PIN keamanan</p>
+                </div>
+              </div>
+
+              <div className="p-3.5 rounded-xl bg-amber-50/70 border border-amber-200 text-amber-950 space-y-2">
+                <div className="text-[11px] font-semibold leading-relaxed">
+                  Kode ini berfungsi seperti Master Key. Jika Anda lupa kata sandi dan PIN toko, masukkan kode ini di menu <strong>Lupa Sandi / PIN</strong> untuk memulihkan akses penuh.
+                </div>
+
+                <div className="flex items-center justify-between bg-white px-3.5 py-2.5 rounded-xl border border-amber-300/80 shadow-2xs font-mono font-black text-sm text-amber-900 tracking-wider">
+                  <span>{storeRecoveryKey || 'Memuat kode pemulihan...'}</span>
+                  {storeRecoveryKey && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        navigator.clipboard.writeText(storeRecoveryKey);
+                        setCopiedKey(true);
+                        setTimeout(() => setCopiedKey(false), 2000);
+                      }}
+                      className="px-2.5 py-1 text-xs font-sans font-bold bg-amber-100 hover:bg-amber-200 text-amber-900 rounded-lg transition cursor-pointer flex items-center gap-1"
+                    >
+                      {copiedKey ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
+                      <span>{copiedKey ? 'Disalin!' : 'Salin'}</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* 4. Kartu Informasi Keamanan Standar m-Banking 2-Lapis */}
+          <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs space-y-3">
+            <div className="flex items-center gap-2 pb-2 border-b border-slate-100">
+              <Shield className="w-4 h-4 text-indigo-600" />
+              <div>
+                <h2 className="font-extrabold text-sm text-slate-800">Keamanan Akses Standar Perbankan</h2>
+                <p className="text-[11px] text-slate-500">Perlindungan 2-Lapis Mandiri (Tanpa Ketergantungan Eksternal)</p>
+              </div>
+            </div>
+
+            <div className="space-y-2.5 text-xs text-slate-600 leading-relaxed">
+              <div className="p-3 rounded-xl bg-blue-50/70 border border-blue-200 text-blue-900">
+                <div className="font-bold flex items-center gap-1.5 mb-0.5">
+                  <ShieldCheck className="w-4 h-4 text-blue-600" />
+                  <span>Autentikasi 2-Lapis (Password + Master PIN)</span>
+                </div>
+                Pintu masuk toko dilindungi kata sandi dan PIN 6-digit. Memastikan toko Anda aman dari akses yang tidak berhak meskipun perangkat kasir ditinggalkan.
               </div>
 
               <div className="p-3 rounded-xl bg-emerald-50/70 border border-emerald-200 text-emerald-900">
-                <div className="font-bold flex items-center gap-1.5 mb-1">
+                <div className="font-bold flex items-center gap-1.5 mb-0.5">
                   <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                  <span>Verifikasi Email OTP 2-Faktor</span>
+                  <span>Pemulihan Mandiri Fleksibel</span>
                 </div>
-                Setiap kali masuk ke toko, sistem meminta kode 6-digit OTP yang dikirimkan ke email pemilik atau operator, memastikan kasir tidak disusupi pihak tak berwenang.
+                Jika lupa kata sandi, Anda bisa meresetnya menggunakan 6-Digit PIN. Jika lupa PIN, Anda bisa meresetnya menggunakan kata sandi akun.
               </div>
 
-              <div className="p-3 rounded-xl bg-amber-50/70 border border-amber-200 text-amber-900">
-                <div className="font-bold flex items-center gap-1.5 mb-1">
-                  <AlertTriangle className="w-4 h-4 text-amber-600" />
-                  <span>Tips Keamanan Kasir</span>
+              <div className="p-3 rounded-xl bg-slate-100 border border-slate-200 text-slate-800">
+                <div className="font-bold flex items-center gap-1.5 mb-0.5">
+                  <Lock className="w-4 h-4 text-slate-600" />
+                  <span>Enkripsi Kriptografis Salted Scrypt</span>
                 </div>
-                Gunakan kombinasi huruf, angka, dan simbol untuk kata sandi. Jangan membagikan kode OTP atau PIN otorisasi supervisor kepada kasir umum.
+                Seluruh kata sandi dan PIN dienkripsi dengan algoritma scrypt anti-bruteforce dan isolasi database tenant tersendiri.
               </div>
             </div>
           </div>
         </div>
       )}
+
       {operatorModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4 animate-fade-in">
           <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full overflow-hidden border border-slate-200">

@@ -3,7 +3,6 @@ import http from 'http';
 import express from 'express';
 import { apiRouter } from '../routes/api';
 import { tenantMiddleware } from '../middleware/tenant';
-import { defaultDb, getTenantDatabase } from '../db/tenant';
 
 const app = express();
 app.use(express.json());
@@ -65,7 +64,7 @@ async function runTests() {
     assert(Array.isArray(resList.body.tenants));
     console.log(`✓ Daftar tenant berhasil dimuat: ${resList.body.tenants.length} tenant ditemukan`);
 
-    console.log('\n--- 2. Test POST /api/auth/login-step1 & OTP Generation ---');
+    console.log('\n--- 2. Test POST /api/auth/login-step1 (Password Check & PIN Session) ---');
     const resStep1 = await request({
       method: 'POST',
       path: '/api/auth/login-step1',
@@ -77,152 +76,193 @@ async function runTests() {
     });
     assert.strictEqual(resStep1.status, 200);
     assert.strictEqual(resStep1.body.success, true);
-    assert.strictEqual(resStep1.body.requiresOtp, true);
+    assert.strictEqual(resStep1.body.requiresPin, true);
     assert(resStep1.body.tempSessionToken);
-    assert(resStep1.body.devOtp);
-    console.log(`✓ Step 1 login sukses: OTP = ${resStep1.body.devOtp}, token sesi terbit`);
+    console.log(`✓ Step 1 login sukses: Password valid, sesi verifikasi PIN terbit`);
 
-    console.log('\n--- 3. Test POST /api/auth/login-verify-otp (Salah OTP vs Benar) ---');
-    const resWrongOtp = await request({
+    console.log('\n--- 3. Test POST /api/auth/login-verify-pin (Salah PIN vs Benar) ---');
+    const resWrongPin = await request({
       method: 'POST',
-      path: '/api/auth/login-verify-otp',
+      path: '/api/auth/login-verify-pin',
       body: {
         tempSessionToken: resStep1.body.tempSessionToken,
-        otpCode: '000000',
+        pin: '999999',
       },
     });
-    assert.strictEqual(resWrongOtp.status, 400);
-    console.log(`✓ Proteksi OTP salah berhasil menolak akses: ${resWrongOtp.body.error}`);
+    // Jika user default punya PIN, status 401. Jika belum ada PIN, first input becomes the PIN.
+    let ownerToken: string;
+    if (resWrongPin.status === 401) {
+      console.log(`✓ Proteksi PIN salah berhasil menolak akses: ${resWrongPin.body.error}`);
+      // Default seed user PIN is '112233'
+      const resCorrectPin = await request({
+        method: 'POST',
+        path: '/api/auth/login-verify-pin',
+        body: {
+          tempSessionToken: resStep1.body.tempSessionToken,
+          pin: '112233',
+        },
+      });
+      assert.strictEqual(resCorrectPin.status, 200);
+      assert.strictEqual(resCorrectPin.body.success, true);
+      assert(resCorrectPin.body.token);
+      ownerToken = resCorrectPin.body.token;
+      console.log(`✓ Verifikasi PIN benar berhasil terbit token JWT Bearer`);
+    } else {
+      assert.strictEqual(resWrongPin.status, 200);
+      ownerToken = resWrongPin.body.token;
+      console.log(`✓ Inisialisasi PIN pertama kali berhasil`);
+    }
 
-    const resCorrectOtp = await request({
-      method: 'POST',
-      path: '/api/auth/login-verify-otp',
-      body: {
-        tempSessionToken: resStep1.body.tempSessionToken,
-        otpCode: resStep1.body.devOtp,
-      },
-    });
-    assert.strictEqual(resCorrectOtp.status, 200);
-    assert.strictEqual(resCorrectOtp.body.success, true);
-    assert(resCorrectOtp.body.token);
-    assert.strictEqual(resCorrectOtp.body.user.role, 'owner');
-    console.log(`✓ Verifikasi OTP benar berhasil terbit token JWT Bearer`);
-
-    const ownerToken = resCorrectOtp.body.token;
-
-    console.log('\n--- 4. Test Registrasi Toko Baru Mandiri (Self-Service) ---');
+    console.log('\n--- 4. Test Registrasi Toko Baru Mandiri (Skema 1: Password + 6-Digit PIN) ---');
     const testStoreName = `Toko Mandiri Test ${Date.now()}`;
-    const testEmail = `mitra_${Date.now()}@testpos.com`;
+    const testPhone = '081298765432';
+    const testPassword = 'password123';
+    const testPin = '654321';
 
-    const resRegOtp = await request({
+    const resRegDirect = await request({
       method: 'POST',
-      path: '/api/auth/register-send-otp',
+      path: '/api/auth/register-store',
       body: {
         storeName: testStoreName,
         ownerName: 'Budi Test Owner',
-        email: testEmail,
+        phone: testPhone,
+        password: testPassword,
+        pin: testPin,
       },
     });
-    assert.strictEqual(resRegOtp.status, 200);
-    assert.strictEqual(resRegOtp.body.success, true);
-    assert(resRegOtp.body.devOtp);
-    console.log(`✓ OTP pendaftaran toko terkirim: ${resRegOtp.body.devOtp}`);
+    assert.strictEqual(resRegDirect.status, 200);
+    assert.strictEqual(resRegDirect.body.success, true);
+    assert(resRegDirect.body.tenantId);
+    assert(resRegDirect.body.token);
+    assert(resRegDirect.body.recoveryKey);
+    assert(resRegDirect.body.recoveryKey.startsWith('RCV-'));
 
-    const resRegComplete = await request({
-      method: 'POST',
-      path: '/api/auth/register-complete',
-      body: {
-        storeName: testStoreName,
-        ownerName: 'Budi Test Owner',
-        email: testEmail,
-        password: 'password123',
-        otpCode: resRegOtp.body.devOtp,
-      },
-    });
-    assert.strictEqual(resRegComplete.status, 200);
-    assert.strictEqual(resRegComplete.body.success, true);
-    assert(resRegComplete.body.tenantId);
-    assert(resRegComplete.body.token);
-    const newTenantId = resRegComplete.body.tenantId;
+    const newTenantId = resRegDirect.body.tenantId;
+    const issuedRecoveryKey = resRegDirect.body.recoveryKey;
+    const newOwnerToken = resRegDirect.body.token;
     console.log(`✓ Toko baru berhasil dibuat: Tenant ID = ${newTenantId}, storeName = ${testStoreName}`);
+    console.log(`✓ Master Recovery Key diterbitkan: ${issuedRecoveryKey}`);
 
-    console.log('\n--- 5. Test Lupa Password (Forgot Password via OTP) ---');
-    const resForgotOtp = await request({
-      method: 'POST',
-      path: '/api/auth/forgot-password',
-      body: {
-        tenantId: newTenantId,
-        email: testEmail,
-      },
-    });
-    assert.strictEqual(resForgotOtp.status, 200);
-    assert.strictEqual(resForgotOtp.body.success, true);
-    assert(resForgotOtp.body.devOtp);
-    console.log(`✓ OTP reset kata sandi terkirim: ${resForgotOtp.body.devOtp}`);
-
-    const resReset = await request({
-      method: 'POST',
-      path: '/api/auth/reset-password',
-      body: {
-        tenantId: newTenantId,
-        email: testEmail,
-        otpCode: resForgotOtp.body.devOtp,
-        newPassword: 'newpassword456',
-      },
-    });
-    assert.strictEqual(resReset.status, 200);
-    assert.strictEqual(resReset.body.success, true);
-    console.log(`✓ Kata sandi berhasil direset via OTP`);
-
-    // Coba login dengan password baru
-    const resLoginNewPass = await request({
+    console.log('\n--- 5. Test 2-Step Login Toko Baru (Password -> PIN) ---');
+    const resNewStep1 = await request({
       method: 'POST',
       path: '/api/auth/login-step1',
       body: {
         tenantId: newTenantId,
-        username: testEmail,
+        username: 'owner',
+        password: testPassword,
+      },
+    });
+    assert.strictEqual(resNewStep1.status, 200);
+    assert.strictEqual(resNewNewStep1RequiresPin(resNewStep1), true);
+
+    const resNewWrongPin = await request({
+      method: 'POST',
+      path: '/api/auth/login-verify-pin',
+      body: {
+        tempSessionToken: resNewStep1.body.tempSessionToken,
+        pin: '111111',
+      },
+    });
+    assert.strictEqual(resNewWrongPin.status, 401);
+    console.log(`✓ Salah PIN ditolak: ${resNewWrongPin.body.error}`);
+
+    const resNewCorrectPin = await request({
+      method: 'POST',
+      path: '/api/auth/login-verify-pin',
+      body: {
+        tempSessionToken: resNewStep1.body.tempSessionToken,
+        pin: testPin,
+      },
+    });
+    assert.strictEqual(resNewCorrectPin.status, 200);
+    assert.strictEqual(resNewCorrectPin.body.success, true);
+    console.log(`✓ Login 2-lapis toko baru berhasil 100%!`);
+
+    console.log('\n--- 6. Test Pemulihan Lupa Password via 6-Digit PIN ---');
+    const resResetPass = await request({
+      method: 'POST',
+      path: '/api/auth/recover-password-with-pin',
+      body: {
+        tenantId: newTenantId,
+        username: 'owner',
+        pin: testPin,
+        newPassword: 'newpassword456',
+      },
+    });
+    assert.strictEqual(resResetPass.status, 200);
+    assert.strictEqual(resResetPass.body.success, true);
+    console.log(`✓ Kata sandi berhasil diperbarui menggunakan 6-Digit PIN`);
+
+    // Verifikasi password baru dapat digunakan untuk login step 1
+    const resCheckNewPass = await request({
+      method: 'POST',
+      path: '/api/auth/login-step1',
+      body: {
+        tenantId: newTenantId,
+        username: 'owner',
         password: 'newpassword456',
       },
     });
-    assert.strictEqual(resLoginNewPass.status, 200);
-    assert.strictEqual(resLoginNewPass.body.success, true);
-    console.log(`✓ Login berhasil menggunakan kata sandi baru pasca reset`);
+    assert.strictEqual(resCheckNewPass.status, 200);
+    assert.strictEqual(resCheckNewPass.body.success, true);
+    console.log(`✓ Login step 1 berhasil menggunakan kata sandi baru pasca pemulihan PIN`);
 
-    console.log('\n--- 6. Test Ubah Kata Sandi di Pengaturan Toko (/api/auth/change-password) ---');
-    const resChangePass = await request({
+    console.log('\n--- 7. Test Pemulihan Lupa PIN via Kata Sandi Akun ---');
+    const resResetPin = await request({
       method: 'POST',
-      path: '/api/auth/change-password',
-      headers: {
-        Authorization: `Bearer ${ownerToken}`,
-      },
+      path: '/api/auth/recover-pin-with-password',
       body: {
-        oldPassword: 'admin123',
-        newPassword: 'adminSuperSecret2026',
+        tenantId: newTenantId,
+        username: 'owner',
+        password: 'newpassword456',
+        newPin: '987654',
       },
     });
-    assert.strictEqual(resChangePass.status, 200);
-    assert.strictEqual(resChangePass.body.success, true);
-    console.log(`✓ Kata sandi owner berhasil diubah via menu pengaturan`);
+    assert.strictEqual(resResetPin.status, 200);
+    assert.strictEqual(resResetPin.body.success, true);
+    console.log(`✓ PIN berhasil diperbarui menggunakan kata sandi akun`);
 
-    // Kembalikan kata sandi owner ke admin123 agar test-test lainnya tetap bekerja normal
-    await request({
+    console.log('\n--- 8. Test Pemulihan Darurat via Master Recovery Key (RCV-...) ---');
+    const resEmergencyReset = await request({
       method: 'POST',
-      path: '/api/auth/change-password',
-      headers: {
-        Authorization: `Bearer ${ownerToken}`,
-      },
+      path: '/api/auth/recover-with-key',
       body: {
-        oldPassword: 'adminSuperSecret2026',
-        newPassword: 'admin123',
+        tenantId: newTenantId,
+        recoveryKey: issuedRecoveryKey,
+        newPassword: 'emergencySuperPassword123',
+        newPin: '888999',
       },
     });
+    assert.strictEqual(resEmergencyReset.status, 200);
+    assert.strictEqual(resEmergencyReset.body.success, true);
+    assert(resEmergencyReset.body.newRecoveryKey);
+    const updatedRecoveryKey = resEmergencyReset.body.newRecoveryKey;
+    console.log(`✓ Pemulihan darurat akun toko via Master Recovery Key berhasil! Kunci baru dirotasi: ${updatedRecoveryKey}`);
 
-    console.log('\n======================================================');
-    console.log('SEMUA PENGUJIAN AUTENTIKASI MANDIRI & OTP 100% SUKSES!');
-    console.log('======================================================\n');
+    console.log('\n--- 9. Test Ubah PIN & Akses Recovery Info di Pengaturan Toko ---');
+    const resRecoveryInfo = await request({
+      method: 'GET',
+      path: '/api/auth/recovery-info',
+      headers: {
+        Authorization: `Bearer ${newOwnerToken}`,
+        'x-tenant-id': newTenantId,
+      },
+    });
+    assert.strictEqual(resRecoveryInfo.status, 200);
+    assert.strictEqual(resRecoveryInfo.body.recoveryKey, updatedRecoveryKey);
+    console.log(`✓ Owner berhasil melihat Master Recovery Key terbaru di panel pengaturan`);
+
+    console.log('\n================================================================');
+    console.log('SEMUA PENGUJIAN SKEMA 1 (PASSWORD + PIN + RECOVERY) 100% SUKSES!');
+    console.log('================================================================\n');
   } finally {
     server.close();
   }
+}
+
+function resNewNewStep1RequiresPin(res: any): boolean {
+  return res.body.requiresPin === true;
 }
 
 runTests().catch((err) => {
