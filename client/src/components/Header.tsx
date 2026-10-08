@@ -140,11 +140,11 @@ export const Header: React.FC = () => {
               className="flex items-center gap-1.5 sm:gap-2 px-1.5 sm:px-2.5 py-1 rounded-xl hover:bg-slate-100 border border-transparent hover:border-slate-200 transition cursor-pointer text-left"
             >
               <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-blue-100 text-blue-700 flex items-center justify-center font-bold text-xs uppercase shrink-0">
-                {currentUser ? currentUser.username.slice(0, 2) : 'KS'}
+                {currentUser?.username ? currentUser.username.slice(0, 2).toUpperCase() : 'OP'}
               </div>
               <div className="hidden sm:block">
                 <div className="text-xs font-bold text-slate-800 leading-tight">
-                  {currentUser?.name.split(' ')[0] || 'Kasir'}
+                  {currentUser?.name ? currentUser.name.split(' ')[0] : (currentUser?.username || 'Operator')}
                 </div>
                 <div className="text-[10px] text-slate-500 capitalize leading-tight">
                   {currentUser?.role || 'cashier'}

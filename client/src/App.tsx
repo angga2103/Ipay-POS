@@ -67,7 +67,9 @@ export const App: React.FC = () => {
       <ShiftProvider>
         <PPOBProvider>
           <CartProvider>
-            <MainLayout />
+            <ErrorBoundary fallbackTitle="Terjadi Kendala Memuat Aplikasi POS">
+              <MainLayout />
+            </ErrorBoundary>
           </CartProvider>
         </PPOBProvider>
       </ShiftProvider>

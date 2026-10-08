@@ -504,7 +504,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         return { success: false, error: data.error || 'Pendaftaran toko gagal' };
       }
 
-      setCurrentUser(data.user);
+      // Jangan panggil setCurrentUser di sini agar modal sukses registrasi & Master Recovery Key sempat tampil di LoginPage
       setTenantIdState(data.tenantId);
       if (data.storeName) setStoreName(data.storeName);
       localStorage.setItem('pos_tenant_id', data.tenantId);

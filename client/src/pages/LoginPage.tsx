@@ -60,6 +60,12 @@ export const LoginPage: React.FC = () => {
   const [registeredRecoveryKey, setRegisteredRecoveryKey] = useState('');
   const [registeredStoreName, setRegisteredStoreName] = useState('');
   const [copiedRecoveryKey, setCopiedRecoveryKey] = useState(false);
+  const [pendingRegisteredSession, setPendingRegisteredSession] = useState<{
+    user: any;
+    token?: string;
+    tenantId: string;
+    storeName: string;
+  } | null>(null);
 
   // Recovery Center Modal State (Lupa Password / Lupa PIN)
   const [showRecoveryModal, setShowRecoveryModal] = useState(false);
@@ -184,6 +190,12 @@ export const LoginPage: React.FC = () => {
       return;
     }
 
+    setPendingRegisteredSession({
+      user: res.user,
+      token: res.token,
+      tenantId: res.tenantId || 'default',
+      storeName: res.storeName || regStoreName,
+    });
     setRegisteredRecoveryKey(res.recoveryKey || '');
     setRegisteredStoreName(res.storeName || regStoreName);
     setShowRegisterSuccessModal(true);
@@ -879,7 +891,14 @@ export const LoginPage: React.FC = () => {
             <button
               type="button"
               onClick={() => {
-                setShowRegisterSuccessModal(false);
+                if (pendingRegisteredSession) {
+                  localStorage.setItem('pos_tenant_id', pendingRegisteredSession.tenantId);
+                  localStorage.setItem('pos_user', JSON.stringify(pendingRegisteredSession.user));
+                  if (pendingRegisteredSession.token) {
+                    localStorage.setItem('pos_auth_token', pendingRegisteredSession.token);
+                  }
+                }
+                window.location.href = '/';
               }}
               className="w-full py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow-lg shadow-emerald-600/30 flex items-center justify-center gap-2 cursor-pointer transition"
             >
