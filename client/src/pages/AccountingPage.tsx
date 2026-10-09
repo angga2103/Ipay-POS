@@ -4,7 +4,7 @@ import {
   ArrowRight, Download, RefreshCw, Scale, HelpCircle, 
   PlusCircle, Sparkles, DollarSign, X, Check, FileText,
   Truck, Users, Package, AlertCircle, ArrowUpRight, ShieldCheck,
-  Wallet, Tag, ShoppingBag, Zap
+  Wallet, Tag, ShoppingBag, Zap, RotateCcw, Key, Trash2
 } from 'lucide-react';
 import { ProfitAndLossReport, JournalEntry, ChartOfAccount, Supplier, Customer, OpeningBalanceStatus, InventoryValuation } from '../types';
 import { CashInOutModal } from '../components/CashInOutModal';
@@ -44,6 +44,13 @@ export const AccountingPage: React.FC = () => {
     payables: '0',
     notes: 'Inisialisasi Saldo Awal Neraca (Day 1 Setup)',
   });
+
+  // Reset Ledger State
+  const [isResetModalOpen, setIsResetModalOpen] = useState(false);
+  const [resetPin, setResetPin] = useState('');
+  const [resetMode, setResetMode] = useState<'LEDGER_ONLY' | 'FULL_TRANSACTIONS'>('LEDGER_ONLY');
+  const [isSubmittingReset, setIsSubmittingReset] = useState(false);
+  const [resetError, setResetError] = useState('');
   const [supplierDebtsMap, setSupplierDebtsMap] = useState<Record<number, string>>({});
   const [customerDebtsMap, setCustomerDebtsMap] = useState<Record<number, string>>({});
   const [showSupplierBreakdown, setShowSupplierBreakdown] = useState(false);
@@ -210,6 +217,54 @@ export const AccountingPage: React.FC = () => {
     }
   };
 
+  // Handle Reset Ledger Submit
+  const handleExecuteResetLedger = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!resetPin || resetPin.length < 4) {
+      setResetError('Silakan masukkan 6-digit PIN Keamanan Toko milik Owner');
+      return;
+    }
+
+    const confirmMsg = resetMode === 'FULL_TRANSACTIONS'
+      ? 'PERINGATAN TINGKAT TINGGI:\n\nAnda memilih "Reset Penuh Transaksi & Buku Besar". Seluruh riwayat penjualan, pesanan, piutang, hutang, dan buku besar akan dihapus kembali ke 0 (katalog produk tetap aman).\n\nApakah Anda benar-benar yakin ingin melanjutkan?'
+      : 'KONFIRMASI RESET BUKU BESAR:\n\nSeluruh saldo akun COA (Kas, Bank, PPOB, Persediaan, Hutang, Modal) akan di-nol-kan (Rp 0) dan seluruh jurnal umum akan dikosongkan agar Anda dapat menginput Saldo Awal (Day-1) dari awal.\n\nLanjutkan proses ini?';
+
+    if (!window.confirm(confirmMsg)) {
+      return;
+    }
+
+    setIsSubmittingReset(true);
+    setResetError('');
+
+    try {
+      const res = await fetch('/api/accounting/reset-ledger', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          pin: resetPin,
+          resetMode,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Gagal mereset buku besar');
+      }
+
+      alert(`✅ ${data.message}\n\nCadangan otomatis telah dibuat sebelum reset: ${data.backupFile || 'Snapshot tersimpan'}`);
+      setIsResetModalOpen(false);
+      setResetPin('');
+      fetchAccountingData();
+      fetchOpeningStatus();
+      if (activeTab === 'ledger') fetchLedger(selectedLedgerAccount);
+      if (activeTab === 'operational') fetchOperational();
+    } catch (err: any) {
+      setResetError(err.message);
+    } finally {
+      setIsSubmittingReset(false);
+    }
+  };
+
   // Calculations for Opening Balance Simulation
   const calcAssets = 
     (parseFloat(openingForm.cash_drawer) || 0) +
@@ -237,14 +292,27 @@ export const AccountingPage: React.FC = () => {
           </p>
         </div>
 
-        {/* Action Buttons: Setup Saldo Awal & Panduan */}
-        <div className="flex items-center gap-2">
+        {/* Action Buttons: Setup Saldo Awal, Panduan, & Reset Buku Besar */}
+        <div className="flex flex-wrap items-center gap-2">
           <button
             onClick={() => setIsGuideModalOpen(true)}
             className="px-3 py-2 rounded-xl border border-slate-200 hover:bg-slate-100 text-slate-700 font-bold text-xs flex items-center gap-1.5 transition cursor-pointer"
           >
             <HelpCircle className="w-4 h-4 text-blue-600" />
-            <span>Panduan Pemakaian Pertama</span>
+            <span>Panduan</span>
+          </button>
+
+          <button
+            onClick={() => {
+              setResetError('');
+              setResetPin('');
+              setIsResetModalOpen(true);
+            }}
+            className="px-3 py-2 rounded-xl border border-rose-200 bg-rose-50/70 hover:bg-rose-100 text-rose-700 font-bold text-xs flex items-center gap-1.5 transition cursor-pointer"
+            title="Nol-kan Buku Besar & Reset Pembukuan untuk Set Ulang dari Awal"
+          >
+            <RotateCcw className="w-4 h-4 text-rose-600" />
+            <span>Reset Buku Besar</span>
           </button>
 
           <button
@@ -277,12 +345,26 @@ export const AccountingPage: React.FC = () => {
               </div>
             </div>
 
-            <button
-              onClick={openOpeningModalWithSync}
-              className="text-xs font-bold text-blue-600 hover:text-blue-800 flex items-center gap-1 self-start md:self-auto cursor-pointer"
-            >
-              <span>Sesuaikan / Update Saldo Awal &rarr;</span>
-            </button>
+            <div className="flex items-center gap-2 self-start md:self-auto flex-wrap">
+              <button
+                onClick={openOpeningModalWithSync}
+                className="text-xs font-bold text-blue-600 hover:text-blue-800 flex items-center gap-1 cursor-pointer"
+              >
+                <span>Sesuaikan / Update Saldo Awal &rarr;</span>
+              </button>
+              <span className="text-slate-300 hidden sm:inline">|</span>
+              <button
+                onClick={() => {
+                  setResetError('');
+                  setResetPin('');
+                  setIsResetModalOpen(true);
+                }}
+                className="text-xs font-bold text-rose-600 hover:text-rose-800 flex items-center gap-1 cursor-pointer"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                <span>Nol-kan & Set Ulang &rarr;</span>
+              </button>
+            </div>
           </div>
 
           {/* Sync reconciliation metrics grid */}
@@ -1390,6 +1472,155 @@ export const AccountingPage: React.FC = () => {
                 >
                   <Check className="w-4 h-4" />
                   <span>{isSubmittingOpening ? 'Menyimpan...' : 'Simpan & Terapkan Saldo Awal'}</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Reset Buku Besar & Nol-kan Pembukuan */}
+      {isResetModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-lg w-full overflow-hidden flex flex-col max-h-[92vh] border border-rose-200">
+            {/* Header */}
+            <div className="px-5 py-4 border-b border-rose-100 flex items-center justify-between bg-rose-50/80">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-rose-100 text-rose-600 flex items-center justify-center font-bold shrink-0">
+                  <RotateCcw className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-sm text-slate-800">
+                    Reset Pembukuan & Nol-kan Buku Besar
+                  </h3>
+                  <p className="text-xs text-rose-700">
+                    Set ulang seluruh saldo akun COA menjadi Rp 0 untuk Day-1 baru
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setIsResetModalOpen(false)}
+                className="text-slate-400 hover:text-slate-700 p-1 rounded-lg cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Form */}
+            <form onSubmit={handleExecuteResetLedger} className="p-5 overflow-y-auto space-y-4 text-xs">
+              {resetError && (
+                <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 shrink-0" />
+                  <span>{resetError}</span>
+                </div>
+              )}
+
+              {/* Warning info */}
+              <div className="p-3.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 space-y-1.5 leading-relaxed">
+                <div className="font-bold flex items-center gap-1.5 text-amber-950">
+                  <ShieldCheck className="w-4 h-4 text-emerald-600" />
+                  <span>Cadangan Otomatis Aman (Auto Snapshot)</span>
+                </div>
+                <p className="text-[11.5px] text-amber-800">
+                  Sebelum data di-reset, sistem akan otomatis membuat file snapshot backup database sehingga Anda tidak perlu khawatir kehilangan data.
+                </p>
+              </div>
+
+              {/* Pilih Mode Reset */}
+              <div className="space-y-2">
+                <label className="font-bold text-slate-800 block text-xs">
+                  Pilih Skema Pembersihan:
+                </label>
+
+                {/* Option 1: LEDGER_ONLY */}
+                <label
+                  onClick={() => setResetMode('LEDGER_ONLY')}
+                  className={`p-3 rounded-xl border-2 flex items-start gap-3 cursor-pointer transition ${
+                    resetMode === 'LEDGER_ONLY'
+                      ? 'border-blue-600 bg-blue-50/50'
+                      : 'border-slate-200 hover:border-slate-300 bg-white'
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="reset_mode"
+                    checked={resetMode === 'LEDGER_ONLY'}
+                    onChange={() => setResetMode('LEDGER_ONLY')}
+                    className="mt-0.5"
+                  />
+                  <div>
+                    <div className="font-extrabold text-slate-900 text-xs">
+                      1. Nol-kan Buku Besar Saja (Rekomendasi)
+                    </div>
+                    <p className="text-[11px] text-slate-600 mt-0.5 leading-relaxed">
+                      Meng-nol-kan saldo akun COA (Kas, Bank, PPOB, Persediaan, Hutang, Modal) ke Rp 0, menghapus seluruh jurnal umum, dan mereset status Saldo Awal (Day-1). Riwayat pesanan & katalog produk tetap utuh.
+                    </p>
+                  </div>
+                </label>
+
+                {/* Option 2: FULL_TRANSACTIONS */}
+                <label
+                  onClick={() => setResetMode('FULL_TRANSACTIONS')}
+                  className={`p-3 rounded-xl border-2 flex items-start gap-3 cursor-pointer transition ${
+                    resetMode === 'FULL_TRANSACTIONS'
+                      ? 'border-rose-600 bg-rose-50/50'
+                      : 'border-slate-200 hover:border-slate-300 bg-white'
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="reset_mode"
+                    checked={resetMode === 'FULL_TRANSACTIONS'}
+                    onChange={() => setResetMode('FULL_TRANSACTIONS')}
+                    className="mt-0.5"
+                  />
+                  <div>
+                    <div className="font-extrabold text-rose-950 text-xs">
+                      2. Reset Penuh Transaksi Uji Coba & Buku Besar
+                    </div>
+                    <p className="text-[11px] text-slate-600 mt-0.5 leading-relaxed">
+                      Nol-kan buku besar serta menghapus riwayat transaksi pesanan, retur, hutang/piutang pelanggan & supplier kembali ke 0. Cocok bila selesai masa uji coba sistem. <strong className="text-slate-800">Katalog Produk & Kategori tetap 100% aman!</strong>
+                    </p>
+                  </div>
+                </label>
+              </div>
+
+              {/* PIN Input */}
+              <div className="space-y-1.5 pt-1">
+                <label className="font-bold text-slate-800 flex items-center gap-1.5">
+                  <Key className="w-3.5 h-3.5 text-slate-600" />
+                  <span>PIN Keamanan Toko (Owner):</span>
+                </label>
+                <input
+                  type="password"
+                  maxLength={6}
+                  value={resetPin}
+                  onChange={(e) => setResetPin(e.target.value.replace(/\D/g, ''))}
+                  placeholder="Masukkan 6-digit PIN Owner"
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-rose-500 font-mono tracking-widest text-center text-sm font-bold bg-slate-50"
+                  required
+                />
+                <span className="text-[10.5px] text-slate-500 block">
+                  Diperlukan untuk otorisasi keamanan sebelum mengosongkan pembukuan.
+                </span>
+              </div>
+
+              {/* Action Buttons */}
+              <div className="pt-3 border-t border-slate-200 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setIsResetModalOpen(false)}
+                  className="px-4 py-2 rounded-xl border border-slate-300 text-slate-700 font-bold hover:bg-slate-100 transition cursor-pointer"
+                >
+                  Batal
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSubmittingReset || resetPin.length < 4}
+                  className="px-5 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-extrabold shadow-md flex items-center gap-1.5 transition cursor-pointer disabled:opacity-50"
+                >
+                  <RotateCcw className="w-4 h-4" />
+                  <span>{isSubmittingReset ? 'Mereset...' : 'Eksekusi Nol-kan Buku Besar'}</span>
                 </button>
               </div>
             </form>

@@ -800,4 +800,67 @@ export class AccountingService {
       lines: getLines.all(entry.id),
     }));
   }
+
+  /**
+   * Reset Buku Besar & Jurnal Akuntansi (Nol-kan Buku Besar)
+   * Mode 'LEDGER_ONLY': Meng-nol-kan COA, menghapus jurnal, reset Day-1 status
+   * Mode 'FULL_TRANSACTIONS': Nol-kan COA + hapus riwayat pesanan/transaksi uji coba
+   */
+  static resetLedger(mode: 'LEDGER_ONLY' | 'FULL_TRANSACTIONS' = 'LEDGER_ONLY') {
+    const runReset = db.transaction(() => {
+      // 1. Kosongkan seluruh jurnal akuntansi berpasangan
+      db.prepare("DELETE FROM journal_lines").run();
+      db.prepare("DELETE FROM journal_entries").run();
+
+      // 2. Nol-kan seluruh saldo Chart of Accounts (COA)
+      db.prepare("UPDATE chart_of_accounts SET balance = 0").run();
+
+      // 3. Kosongkan riwayat kas operasional & pergerakan laci kasir
+      db.prepare("DELETE FROM operational_transactions").run();
+      db.prepare("DELETE FROM shift_cash_logs").run();
+
+      // 4. Reset data kas shift aktif jika ada
+      db.prepare(`
+        UPDATE shifts
+        SET total_cash_in = 0,
+            total_cash_out = 0,
+            expected_cash = opening_cash,
+            total_retail_sales = 0,
+            total_ppob_sales = 0,
+            discrepancy = 0
+        WHERE status = 'OPEN'
+      `).run();
+
+      // 5. Jika mode FULL_TRANSACTIONS dipilih:
+      if (mode === 'FULL_TRANSACTIONS') {
+        try { db.prepare("DELETE FROM sales_return_items").run(); } catch {}
+        try { db.prepare("DELETE FROM sales_returns").run(); } catch {}
+        try { db.prepare("DELETE FROM order_items").run(); } catch {}
+        try { db.prepare("DELETE FROM orders").run(); } catch {}
+        try { db.prepare("DELETE FROM service_orders").run(); } catch {}
+        try { db.prepare("DELETE FROM ppob_transactions").run(); } catch {}
+        try { db.prepare("DELETE FROM customer_debt_payments").run(); } catch {}
+        try { db.prepare("UPDATE customers SET current_debt = 0").run(); } catch {}
+        try { db.prepare("DELETE FROM supplier_debt_payments").run(); } catch {}
+        try { db.prepare("DELETE FROM purchase_order_items").run(); } catch {}
+        try { db.prepare("DELETE FROM purchase_orders").run(); } catch {}
+        try { db.prepare("UPDATE suppliers SET current_debt = 0").run(); } catch {}
+        try { db.prepare("DELETE FROM held_bills").run(); } catch {}
+        try { db.prepare("DELETE FROM ppob_deposits").run(); } catch {}
+        try { db.prepare("DELETE FROM stock_opname_items").run(); } catch {}
+        try { db.prepare("DELETE FROM stock_opname").run(); } catch {}
+        try { db.prepare("DELETE FROM shifts").run(); } catch {}
+      }
+    });
+
+    runReset();
+
+    return {
+      success: true,
+      mode,
+      message: mode === 'FULL_TRANSACTIONS'
+        ? 'Seluruh riwayat transaksi uji coba dan buku besar berhasil di-nol-kan. Data katalog produk & master data tetap utuh.'
+        : 'Buku besar, jurnal umum, dan saldo akun COA berhasil di-nol-kan (Rp 0). Anda dapat melakukan Setup Saldo Awal (Day-1) kembali.',
+    };
+  }
 }

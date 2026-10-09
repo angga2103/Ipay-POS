@@ -140,8 +140,45 @@ async function runAccountingAuditTests() {
   const finalTrial = AccountingService.getTrialBalance();
   assert(finalTrial.isBalanced, `Final Trial Balance is 100% balanced (Total Debit: ${finalTrial.totalDebit}, Total Credit: ${finalTrial.totalCredit})`);
 
+  // --- Test 6: Reset Buku Besar & Nol-kan Jurnal (Day-1 Re-setup) ---
+  console.log('\n--- Test 6: Reset Buku Besar & Nol-kan Jurnal (Day-1 Re-setup) ---');
+  const resetRes = AccountingService.resetLedger('LEDGER_ONLY');
+  assert(resetRes.success, 'resetLedger LEDGER_ONLY executed successfully');
+
+  // Verify accounts zeroed out
+  const nonZeroAccounts = db.prepare('SELECT COUNT(*) as c FROM chart_of_accounts WHERE balance != 0').get() as any;
+  assert(nonZeroAccounts.c === 0, 'All COA balances are strictly 0');
+
+  // Verify journals cleared
+  const journalCount = (db.prepare('SELECT COUNT(*) as c FROM journal_entries').get() as any).c;
+  const lineCount = (db.prepare('SELECT COUNT(*) as c FROM journal_lines').get() as any).c;
+  assert(journalCount === 0 && lineCount === 0, 'All journal entries and lines cleared to 0');
+
+  // Verify opening balance status is unconfigured and balanced
+  const statusAfterReset = AccountingService.getOpeningBalanceStatus();
+  assert(!statusAfterReset.is_configured, 'Opening balance is unconfigured after reset');
+  assert(statusAfterReset.balances.owner_equity === 0, 'Owner equity is 0 after reset');
+  assert(statusAfterReset.reconciliation.is_balanced, 'Trial balance is 100% balanced at 0 after reset');
+
+  // Test re-initializing clean Day-1 setup from scratch
+  console.log('--- Test 6B: Re-initialization of Day-1 Setup from Scratch ---');
+  AccountingService.recordOpeningBalance({
+    cash_drawer: 5000000,
+    bank_balance: 100000000,
+    ppob_deposit: 2000000,
+    receivables: 0,
+    inventory_value: 10000000,
+    payables: 1000000,
+    notes: 'Re-setup Saldo Awal Bersih Pasca Reset',
+  });
+
+  const statusAfterReSetup = AccountingService.getOpeningBalanceStatus();
+  assert(statusAfterReSetup.is_configured, 'Opening balance successfully re-configured');
+  assert(statusAfterReSetup.balances.owner_equity === 116000000, 'Owner equity is exactly (117m assets - 1m debt) = 116,000,000');
+  assert(statusAfterReSetup.reconciliation.is_balanced, 'Re-configured Day-1 Trial balance is 100% balanced');
+
   console.log('\n================================================================');
-  console.log('🎉 ALL 5 ACCOUNTING AUDIT VERIFICATIONS PASSED 100%!');
+  console.log('🎉 ALL 6 ACCOUNTING AUDIT & RESET VERIFICATIONS PASSED 100%!');
   console.log('================================================================\n');
 }
 

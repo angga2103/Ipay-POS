@@ -3448,6 +3448,44 @@ apiRouter.post('/accounting/opening-balance', (req: Request, res: Response) => {
   }
 });
 
+apiRouter.post('/accounting/reset-ledger', async (req: Request, res: Response) => {
+  try {
+    const { pin, resetMode } = req.body;
+    if (!pin) {
+      return res.status(400).json({ error: 'PIN Keamanan Toko (Owner) wajib diisi untuk melakukan reset pembukuan' });
+    }
+
+    // Otorisasi: Verifikasi PIN terhadap user dengan role 'owner' atau 'supervisor'
+    const authorizedUsers = db.prepare("SELECT id, name, role, pin FROM users WHERE role IN ('owner', 'supervisor')").all() as any[];
+    const validUser = authorizedUsers.find(u => u.pin && verifySecret(String(pin).trim(), u.pin));
+    if (!validUser) {
+      return res.status(401).json({ error: 'PIN Keamanan Pemilik Toko (Owner) tidak valid' });
+    }
+
+    // 1. Buat cadangan keamanan otomatis (Auto Snapshot) sebelum eksekusi reset
+    let backupResult = null;
+    try {
+      backupResult = await BackupService.createBackup('pre_reset_ledger');
+    } catch (bErr) {
+      console.warn('[ResetLedger] Warning during safety backup snapshot:', bErr);
+    }
+
+    // 2. Jalankan Reset Buku Besar
+    const mode = resetMode === 'FULL_TRANSACTIONS' ? 'FULL_TRANSACTIONS' : 'LEDGER_ONLY';
+    const result = AccountingService.resetLedger(mode);
+
+    res.json({
+      success: true,
+      message: result.message,
+      mode: result.mode,
+      backupFile: backupResult?.filename,
+      performedBy: validUser.name,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 apiRouter.get('/reports/dashboard', async (_req: Request, res: Response) => {
   const today = new Date().toISOString().slice(0, 10);
 
