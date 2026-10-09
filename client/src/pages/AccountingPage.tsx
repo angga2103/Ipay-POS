@@ -410,33 +410,58 @@ export const AccountingPage: React.FC = () => {
         </div>
       )}
 
-      {/* Tab Controls Bar - Modern Segmented Navigation */}
-      <div className="bg-slate-100/90 p-1.5 rounded-2xl border border-slate-200/80 shadow-xs flex items-center gap-1.5 overflow-x-auto no-scrollbar">
-        {[
-          { id: 'pl', label: 'Laba Rugi (P&L)', icon: TrendingUp },
-          { id: 'ledger', label: 'Buku Besar per Akun', icon: BookOpen },
-          { id: 'journals', label: 'Jurnal Umum', icon: FileText },
-          { id: 'trial_balance', label: 'Neraca Saldo', icon: Scale },
-          { id: 'coa', label: 'Bagan Akun (COA)', icon: Layers },
-          { id: 'operational', label: 'Pengeluaran & Pemasukan Lain', icon: Wallet },
-        ].map(tab => {
-          const Icon = tab.icon;
-          const isActive = activeTab === tab.id;
-          return (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id as any)}
-              className={`px-3.5 py-2 rounded-xl transition-all duration-150 flex items-center gap-2 whitespace-nowrap cursor-pointer text-xs font-bold ${
-                isActive
-                  ? 'bg-linear-to-r from-blue-600 to-indigo-600 text-white shadow-md shadow-blue-500/25 ring-1 ring-blue-500/40'
-                  : 'text-slate-600 hover:text-slate-900 hover:bg-white/80 active:bg-white'
-              }`}
-            >
-              <Icon className={`w-3.5 h-3.5 shrink-0 ${isActive ? 'text-white' : 'text-slate-500'}`} />
-              <span>{tab.label}</span>
-            </button>
-          );
-        })}
+      {/* Tab Controls Bar - Modern Executive Navigation Cards */}
+      <div className="bg-white p-2.5 md:p-3 rounded-2xl border border-slate-200/90 shadow-xs">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 md:gap-2.5">
+          {[
+            { id: 'pl', label: 'Laba Rugi (P&L)', desc: 'Performa & Margin Toko', icon: TrendingUp },
+            { id: 'ledger', label: 'Buku Besar per Akun', desc: 'Detail Mutasi Akun', icon: BookOpen },
+            { id: 'journals', label: 'Jurnal Umum', desc: 'Audit Debet / Kredit', icon: FileText },
+            { id: 'trial_balance', label: 'Neraca Saldo', desc: 'Keseimbangan Neraca', icon: Scale },
+            { id: 'coa', label: 'Bagan Akun (COA)', desc: 'Daftar Kode Akun', icon: Layers },
+            { id: 'operational', label: 'Pengeluaran & Pemasukan Lain', desc: 'Kas Operasional & Biaya', icon: Wallet },
+          ].map(tab => {
+            const Icon = tab.icon;
+            const isActive = activeTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id as any)}
+                className={`group p-2.5 md:py-3.5 md:px-3 rounded-xl transition-all duration-200 flex items-center gap-2.5 cursor-pointer text-left min-h-[64px] h-full ${
+                  isActive
+                    ? 'bg-linear-to-r from-blue-600 via-indigo-600 to-indigo-700 text-white shadow-md shadow-blue-500/25 ring-2 ring-blue-500/30'
+                    : 'bg-slate-50/90 hover:bg-white text-slate-700 hover:text-slate-900 border border-slate-200/80 hover:border-blue-300 hover:shadow-xs'
+                }`}
+              >
+                <div
+                  className={`w-9 h-9 md:w-10 md:h-10 rounded-xl flex items-center justify-center shrink-0 transition-all duration-200 ${
+                    isActive
+                      ? 'bg-white/20 text-white shadow-inner'
+                      : 'bg-white text-blue-600 border border-slate-200/70 group-hover:bg-blue-50 group-hover:border-blue-200 shadow-2xs'
+                  }`}
+                >
+                  <Icon className="w-5 h-5 md:w-5.5 md:h-5.5" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <span
+                    className={`block font-black text-xs md:text-sm leading-tight ${
+                      isActive ? 'text-white' : 'text-slate-800 group-hover:text-blue-700'
+                    }`}
+                  >
+                    {tab.label}
+                  </span>
+                  <span
+                    className={`block text-[10.5px] md:text-[11px] leading-tight truncate mt-1 ${
+                      isActive ? 'text-blue-100 font-medium' : 'text-slate-400 group-hover:text-slate-500 font-normal'
+                    }`}
+                  >
+                    {tab.desc}
+                  </span>
+                </div>
+              </button>
+            );
+          })}
+        </div>
       </div>
 
       {/* Tab 1: Segregated & Combined Profit & Loss (P&L) */}
