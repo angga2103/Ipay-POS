@@ -99,7 +99,7 @@ async function runSupplierAndDay1SyncTests() {
   // Check Opening Balance Status
   const status = AccountingService.getOpeningBalanceStatus();
   assert(status.is_configured === true, 'Day 1 setup status must be configured');
-  const openingPayablesLine = status.entry?.lines.find(l => l.account_code === '2-1001');
+  const openingPayablesLine = status.entry?.lines.find((l: any) => l.account_code === '2-1001');
   assert(openingPayablesLine?.credit === 5000000, 'Opening journal for 2-1001 must equal 5.000.000');
   assert(status.reconciliation.payables_matches === true, 'Payables must reconcile with suppliers total debt');
   assert(status.reconciliation.is_balanced === true, 'Balance sheet equation must be 100% balanced');

@@ -488,10 +488,27 @@ export const AccountingPage: React.FC = () => {
                 </span>
               </div>
               <div className="space-y-2 text-xs">
-                <div className="flex justify-between items-center py-0.5">
-                  <span className="text-slate-500 font-medium">Omzet Penjualan (4-1001):</span>
-                  <span className="font-mono font-bold text-slate-900">Rp {plData.retail.revenue.toLocaleString('id-ID')}</span>
-                </div>
+                {(plData.retail.discounts ?? 0) > 0 ? (
+                  <>
+                    <div className="flex justify-between items-center py-0.5">
+                      <span className="text-slate-500 font-medium">Penjualan Kotor (4-1001):</span>
+                      <span className="font-mono font-bold text-slate-900">Rp {(plData.retail.grossRevenue ?? plData.retail.revenue).toLocaleString('id-ID')}</span>
+                    </div>
+                    <div className="flex justify-between items-center py-0.5">
+                      <span className="text-rose-600 font-medium">Diskon Penjualan (4-1004):</span>
+                      <span className="font-mono font-bold text-rose-600">-Rp {(plData.retail.discounts || 0).toLocaleString('id-ID')}</span>
+                    </div>
+                    <div className="flex justify-between items-center py-0.5 font-semibold text-slate-800">
+                      <span>Penjualan Bersih:</span>
+                      <span className="font-mono font-bold">Rp {plData.retail.revenue.toLocaleString('id-ID')}</span>
+                    </div>
+                  </>
+                ) : (
+                  <div className="flex justify-between items-center py-0.5">
+                    <span className="text-slate-500 font-medium">Omzet Penjualan (4-1001):</span>
+                    <span className="font-mono font-bold text-slate-900">Rp {plData.retail.revenue.toLocaleString('id-ID')}</span>
+                  </div>
+                )}
                 <div className="flex justify-between items-center py-0.5">
                   <span className="text-slate-500 font-medium">HPP Persediaan (5-1001):</span>
                   <span className="font-mono font-bold text-rose-600">-Rp {plData.retail.cogs.toLocaleString('id-ID')}</span>
@@ -622,16 +639,28 @@ export const AccountingPage: React.FC = () => {
                   I. Pendapatan Operasional Usaha
                 </div>
                 <div className="flex justify-between pl-4 text-slate-600 py-0.5">
-                  <span>4-1001 Penjualan Barang Ritel Toko</span>
-                  <span className="font-mono font-medium">Rp {plData.retail.revenue.toLocaleString('id-ID')}</span>
+                  <span>4-1001 Penjualan Kotor Barang Ritel Toko</span>
+                  <span className="font-mono font-medium">Rp {(plData.retail.grossRevenue ?? plData.retail.revenue).toLocaleString('id-ID')}</span>
                 </div>
+                {(plData.retail.discounts ?? 0) > 0 && (
+                  <div className="flex justify-between pl-4 text-rose-600 py-0.5">
+                    <span>4-1004 Potongan & Diskon Penjualan (Kontra Pendapatan)</span>
+                    <span className="font-mono font-medium">(Rp {(plData.retail.discounts || 0).toLocaleString('id-ID')})</span>
+                  </div>
+                )}
+                {(plData.retail.discounts ?? 0) > 0 && (
+                  <div className="flex justify-between pl-6 text-slate-700 font-semibold py-0.5 bg-slate-50/80 rounded px-2">
+                    <span>Penjualan Bersih Ritel</span>
+                    <span className="font-mono">Rp {plData.retail.revenue.toLocaleString('id-ID')}</span>
+                  </div>
+                )}
                 <div className="flex justify-between pl-4 text-slate-600 py-0.5">
                   <span>4-1002 Penjualan Produk Digital PPOB (iPay)</span>
                   <span className="font-mono font-medium">Rp {plData.ppob.revenue.toLocaleString('id-ID')}</span>
                 </div>
                 <div className="flex justify-between font-bold text-slate-800 pt-1 border-t border-dashed border-slate-200 pl-2">
-                  <span>Total Pendapatan Operasional</span>
-                  <span className="font-mono">Rp {plData.combined.totalRevenue.toLocaleString('id-ID')}</span>
+                  <span>Total Pendapatan Operasional (Net)</span>
+                  <span className="font-mono">Rp {(plData.retail.revenue + plData.ppob.revenue).toLocaleString('id-ID')}</span>
                 </div>
               </div>
 
@@ -671,11 +700,19 @@ export const AccountingPage: React.FC = () => {
                   IV. Beban Operasional & Toko
                 </div>
                 <div className="flex justify-between pl-4 text-slate-600 py-0.5">
-                  <span>6-1001 Beban Operasional Umum (Listrik, Air, ATK, Kebersihan)</span>
+                  <span>6-1001 Beban Operasional Toko (Listrik, Air, Gaji, ATK)</span>
                   <span className="font-mono font-medium">
-                    Rp {(plData.operatingExpenses || 0).toLocaleString('id-ID')}
+                    Rp {(plData.generalExpenses ?? plData.operatingExpenses ?? 0).toLocaleString('id-ID')}
                   </span>
                 </div>
+                {(plData.cashDiscrepancyExpense ?? 0) !== 0 && (
+                  <div className="flex justify-between pl-4 text-slate-600 py-0.5">
+                    <span>5-1003 Beban Selisih Kas / Penyusutan Persediaan</span>
+                    <span className="font-mono font-medium">
+                      Rp {(plData.cashDiscrepancyExpense || 0).toLocaleString('id-ID')}
+                    </span>
+                  </div>
+                )}
                 <div className="flex justify-between font-bold text-slate-800 pt-1 border-t border-dashed border-slate-200 pl-2">
                   <span>Total Beban Operasional</span>
                   <span className="font-mono text-rose-700">(Rp {(plData.operatingExpenses || 0).toLocaleString('id-ID')})</span>
@@ -688,12 +725,9 @@ export const AccountingPage: React.FC = () => {
                   V. Pendapatan (Beban) Lain-lain
                 </div>
                 <div className="flex justify-between pl-4 text-slate-600 py-0.5">
-                  <span>4-1003 Pendapatan Lain-lain (Jual Kardus Bekas, Jasa Titip, dsb)</span>
+                  <span>4-1003 Pendapatan Lain-lain (Admin Fee, Servis, Selisih Lebih Kas)</span>
                   <span className="font-mono font-medium text-emerald-700">
-                    Rp {operationalList
-                      .filter(op => op.type === 'INCOME')
-                      .reduce((acc, curr) => acc + (curr.amount || 0), 0)
-                      .toLocaleString('id-ID')}
+                    Rp {(plData.otherRevenue || 0).toLocaleString('id-ID')}
                   </span>
                 </div>
               </div>

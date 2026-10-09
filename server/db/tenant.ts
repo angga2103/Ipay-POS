@@ -115,6 +115,14 @@ export function initTenantDatabase(tenantDb: Database.Database, tenantId: string
     );
   `);
 
+  // Ensure COA 6-1001 exists for operating expenses
+  try {
+    tenantDb.exec(`
+      INSERT OR IGNORE INTO chart_of_accounts (code, name, type, normal_balance, balance)
+      VALUES ('6-1001', 'Beban Operasional Toko (Listrik, Air, Gaji, ATK)', 'EXPENSE', 'DEBIT', 0);
+    `);
+  } catch {}
+
   // Users is_active, email, phone columns
   try { tenantDb.exec("ALTER TABLE users ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1"); } catch {}
   try { tenantDb.exec("ALTER TABLE users ADD COLUMN email TEXT"); } catch {}
@@ -212,11 +220,12 @@ export function initTenantDatabase(tenantDb: Database.Database, tenantId: string
     { code: '3-1001', name: 'Modal Pemilik', type: 'EQUITY', normal: 'CREDIT', balance: 0 },
     { code: '4-1001', name: 'Pendapatan Penjualan Ritel', type: 'REVENUE', normal: 'CREDIT', balance: 0 },
     { code: '4-1002', name: 'Pendapatan Penjualan PPOB (ipay.my.id)', type: 'REVENUE', normal: 'CREDIT', balance: 0 },
-    { code: '4-1003', name: 'Pendapatan Lain-lain (Admin Fee)', type: 'REVENUE', normal: 'CREDIT', balance: 0 },
+    { code: '4-1003', name: 'Pendapatan Lain-lain (Admin Fee & Servis)', type: 'REVENUE', normal: 'CREDIT', balance: 0 },
     { code: '4-1004', name: 'Potongan & Diskon Penjualan', type: 'REVENUE', normal: 'DEBIT', balance: 0 },
     { code: '5-1001', name: 'HPP Barang Dagangan Ritel', type: 'EXPENSE', normal: 'DEBIT', balance: 0 },
     { code: '5-1002', name: 'HPP Produk Digital PPOB', type: 'EXPENSE', normal: 'DEBIT', balance: 0 },
-    { code: '5-1003', name: 'Beban Selisih Kas / Operasional', type: 'EXPENSE', normal: 'DEBIT', balance: 0 },
+    { code: '5-1003', name: 'Beban Selisih Kas / Penyusutan Persediaan', type: 'EXPENSE', normal: 'DEBIT', balance: 0 },
+    { code: '6-1001', name: 'Beban Operasional Toko (Listrik, Air, Gaji, ATK)', type: 'EXPENSE', normal: 'DEBIT', balance: 0 },
   ];
   const insertCoa = tenantDb.prepare(`
     INSERT OR IGNORE INTO chart_of_accounts (code, name, type, normal_balance, balance)

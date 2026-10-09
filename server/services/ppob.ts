@@ -69,8 +69,6 @@ export class PPOBService {
           const data = await res.json() as any;
           if (data && typeof data.balance === 'number') {
             currentBalance = data.balance;
-            // Synchronize ledger account balance if there was a manual top-up
-            db.prepare("UPDATE chart_of_accounts SET balance = ? WHERE code = '1-1003'").run(currentBalance);
           }
         }
       } catch (err) {
@@ -275,6 +273,15 @@ export class PPOBService {
       const config = this.getConfig();
 
       console.log(`[PPOB Webhook] Received callback for ref_id: ${payload.ref_id}, status: ${payload.status}`);
+
+      // Verify webhook signature in live production mode
+      if (config.mode === 'live') {
+        const expectedSign = this.generateSignature(config.merchantId, config.secretKey, payload.ref_id);
+        if (!payload.sign || payload.sign.toLowerCase() !== expectedSign.toLowerCase()) {
+          console.warn(`[PPOB Webhook] Signature verification failed for ref_id: ${payload.ref_id}`);
+          return { success: false, message: 'Tanda tangan webhook tidak valid (Signature Mismatch)' };
+        }
+      }
 
       const existingTx = db.prepare('SELECT * FROM ppob_transactions WHERE ref_id = ?').get(payload.ref_id) as any;
       if (!existingTx) {
@@ -642,6 +649,9 @@ export class PPOBService {
     merchant_id?: string;
     deposit_channels?: any;
     message?: string;
+    wa_target?: string;
+    instructions?: string;
+    channels?: any;
   }> {
     const config = this.getConfig();
 
@@ -656,7 +666,8 @@ export class PPOBService {
     };
 
     if (config.mode === 'sandbox') {
-      const liveBal = await this.getBalance();
+      const balRes = await this.getBalance();
+      const liveBal = balRes.balance;
       return {
         success: true,
         data: {
@@ -683,13 +694,13 @@ export class PPOBService {
 
       if (res.ok) {
         const json = await res.json() as any;
-        const liveBal = await this.getBalance();
+        const balRes = await this.getBalance();
         const apiData = json.data || {};
         const channelsList = apiData.channels || defaultChannels;
         return {
           success: true,
           data: apiData,
-          live_balance: typeof apiData.balance === 'number' ? apiData.balance : liveBal,
+          live_balance: typeof apiData.balance === 'number' ? apiData.balance : balRes.balance,
           merchant_id: apiData.merchant_id || config.merchantId,
           wa_target: apiData.wa_target || '081775700114',
           instructions: apiData.instructions || '',
@@ -701,7 +712,8 @@ export class PPOBService {
       console.warn('[PPOB getDepositInfo warning]', err.message);
     }
 
-    const liveBal = await this.getBalance();
+    const balRes = await this.getBalance();
+    const liveBal = balRes.balance;
     return {
       success: true,
       data: {
@@ -729,6 +741,8 @@ export class PPOBService {
     data?: any;
     ref_id?: string;
     amount?: number;
+    base_amount?: number;
+    unique_code?: number;
     channel?: string;
     target_account?: string;
     target_name?: string;
@@ -1002,6 +1016,28 @@ export class PPOBService {
         ],
       });
 
+      // Jika sumber dana kas laci kasir (1-1001), selaraskan laci kasir shift aktif
+      if (sourceAcc === '1-1001') {
+        const activeShift = db.prepare("SELECT id, cashier_id FROM shifts WHERE status = 'OPEN' ORDER BY id DESC LIMIT 1").get() as any;
+        if (activeShift) {
+          db.prepare(`
+            INSERT INTO shift_cash_logs (shift_id, cashier_id, type, amount, reason)
+            VALUES (?, ?, 'CASH_OUT', ?, ?)
+          `).run(
+            activeShift.id,
+            activeShift.cashier_id || 1,
+            dep.amount,
+            `Top-up Saldo Deposit PPOB (${dep.ref_id})`
+          );
+
+          db.prepare(`
+            UPDATE shifts 
+            SET total_cash_out = total_cash_out + ?, expected_cash = expected_cash - ?
+            WHERE id = ?
+          `).run(dep.amount, dep.amount, activeShift.id);
+        }
+      }
+
       return {
         success: true,
         message: `Tiket ${dep.ref_id} sebesar Rp ${dep.amount.toLocaleString('id-ID')} berhasil disetujui. Saldo akun deposit PPOB (1-1003) kini resmi bertambah.`,
@@ -1052,8 +1088,51 @@ export class PPOBService {
       const diff = Math.round((liveBal - ledgerBal) * 100) / 100;
 
       if (diff !== 0) {
-        db.prepare("UPDATE chart_of_accounts SET balance = ? WHERE code = '1-1003'").run(liveBal);
-        console.log(`[PPOB Reconcile] Saldo Akun 1-1003 disinkronkan: ${ledgerBal} -> ${liveBal} (selisih: ${diff})`);
+        if (diff > 0) {
+          // Saldo live lebih besar dari buku POS (Setoran modal di luar kasir / komisi)
+          AccountingService.createJournalEntry({
+            reference_type: 'PPOB_RECONCILIATION',
+            reference_id: `REC-${Date.now().toString().slice(-6)}`,
+            description: `Penyesuaian Selisih Lebih Saldo PPOB Live ipay.my.id`,
+            lines: [
+              {
+                account_code: '1-1003',
+                debit: diff,
+                credit: 0,
+                memo: `Penyesuaian saldo live PPOB lebih tinggi`,
+              },
+              {
+                account_code: '3-1001',
+                debit: 0,
+                credit: diff,
+                memo: `Setoran modal / penambahan saldo luar kasir`,
+              },
+            ],
+          });
+        } else {
+          // Saldo live lebih kecil (Beban selisih kas / potongan gateway)
+          const shortAmount = Math.abs(diff);
+          AccountingService.createJournalEntry({
+            reference_type: 'PPOB_RECONCILIATION',
+            reference_id: `REC-${Date.now().toString().slice(-6)}`,
+            description: `Penyesuaian Selisih Kurang Saldo PPOB Live ipay.my.id`,
+            lines: [
+              {
+                account_code: '5-1003',
+                debit: shortAmount,
+                credit: 0,
+                memo: `Beban selisih saldo deposit PPOB live`,
+              },
+              {
+                account_code: '1-1003',
+                debit: 0,
+                credit: shortAmount,
+                memo: `Pengurangan saldo deposit PPOB live`,
+              },
+            ],
+          });
+        }
+        console.log(`[PPOB Reconcile] Jurnal penyesuaian double-entry dibuat untuk selisih: ${diff}`);
       }
 
       return {

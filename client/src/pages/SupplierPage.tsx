@@ -10,7 +10,7 @@ import { useShift } from '../context/ShiftContext';
 import { useAuth } from '../context/AuthContext';
 
 export const SupplierPage: React.FC = () => {
-  const { currentShift } = useShift();
+  const { activeShift } = useShift();
   const { currentUser } = useAuth();
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [loading, setLoading] = useState(false);
@@ -193,7 +193,7 @@ export const SupplierPage: React.FC = () => {
           source_account: sourceAccount,
           notes: payNotes,
           user_id: currentUser?.id,
-          shift_id: currentShift?.id,
+          shift_id: activeShift?.id,
         }),
       });
 

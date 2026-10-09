@@ -13,7 +13,7 @@
     "preview": "vite preview",
     "seed": "tsx server/db/seed.ts",
     "postinstall": "node scripts/ensure-sqlite.cjs",
-    "test": "tsx server/tests/run-tests.ts && tsx server/tests/test-konter-service.ts && tsx server/tests/test-customer-kasbon.ts && tsx server/tests/test-supplier-and-day1-sync.ts && tsx server/tests/test-backup-system.ts && tsx server/tests/test-multitenant.ts && tsx server/tests/test-retur-and-operational.ts && tsx server/tests/test-auth-otp-and-tenant-reg.ts"
+    "test": "tsx server/tests/run-tests.ts && tsx server/tests/test-konter-service.ts && tsx server/tests/test-customer-kasbon.ts && tsx server/tests/test-supplier-and-day1-sync.ts && tsx server/tests/test-backup-system.ts && tsx server/tests/test-multitenant.ts && tsx server/tests/test-retur-and-operational.ts && tsx server/tests/test-auth-otp-and-tenant-reg.ts && tsx server/tests/test-accounting-flow-audit.ts"
   },
   "keywords": [
     "pos",

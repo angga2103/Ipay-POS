@@ -8,6 +8,7 @@ export interface User {
   pin?: string;
   email?: string;
   phone?: string;
+  is_active?: number;
 }
 
 export interface Shift {
@@ -223,6 +224,8 @@ export interface JournalEntry {
 export interface ProfitAndLossReport {
   period: { start: string; end: string };
   retail: {
+    grossRevenue?: number;
+    discounts?: number;
     revenue: number;
     cogs: number;
     grossProfit: number;
@@ -234,8 +237,11 @@ export interface ProfitAndLossReport {
     grossProfit: number;
     marginPercent: number;
   };
+  discounts?: number;
   otherRevenue: number;
   operatingExpenses: number;
+  generalExpenses?: number;
+  cashDiscrepancyExpense?: number;
   combined: {
     totalRevenue: number;
     totalCOGS: number;

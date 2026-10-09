@@ -173,6 +173,15 @@ export class BackupService {
       throw new Error('File backup tidak ditemukan atau tidak valid');
     }
 
+    const tenantId = this.getCurrentTenantId();
+    const isValidTenant = tenantId === 'default'
+      ? (sanitized.startsWith('pos_backup_default_') || (!sanitized.startsWith('pos_backup_') || !sanitized.includes('_202')))
+      : sanitized.startsWith(`pos_backup_${tenantId}_`);
+
+    if (!isValidTenant) {
+      throw new Error('Akses ditolak: File backup bukan milik toko/tenant aktif');
+    }
+
     return fullPath;
   }
 

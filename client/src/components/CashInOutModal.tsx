@@ -57,7 +57,7 @@ export const CashInOutModal: React.FC<CashInOutModalProps> = ({ isOpen, onClose,
     setErrorMsg('');
 
     try {
-      // 1. Post to operational transactions endpoint (Double-entry accounting journal)
+      // 1. Post to operational transactions endpoint (Double-entry accounting journal & drawer sync)
       const res = await fetch('/api/operational-transactions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -66,7 +66,9 @@ export const CashInOutModal: React.FC<CashInOutModalProps> = ({ isOpen, onClose,
           category: category.trim() || (type === 'EXPENSE' ? 'Beban Operasional' : 'Pendapatan Lain-lain'),
           description: description.trim(),
           amount,
-          account_code: accountCode,
+          payment_source: accountCode,
+          cashier_id: activeShift?.cashier_id,
+          shift_id: activeShift?.id,
           notes: notes.trim(),
         }),
       });
@@ -74,13 +76,6 @@ export const CashInOutModal: React.FC<CashInOutModalProps> = ({ isOpen, onClose,
       const data = await res.json();
       if (!res.ok) {
         throw new Error(data.error || 'Gagal menyimpan transaksi operasional');
-      }
-
-      // 2. If paid/received from cash drawer 1-1001 and shift is active, sync with shift movement
-      if (accountCode === '1-1001' && activeShift) {
-        const shiftType = type === 'INCOME' ? 'CASH_IN' : 'CASH_OUT';
-        const shiftReason = `[${category}] ${description}`;
-        await addCashMovement(shiftType, amount, shiftReason).catch(() => {});
       }
 
       if (onSuccess) onSuccess();

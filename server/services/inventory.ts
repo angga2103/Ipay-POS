@@ -39,7 +39,7 @@ export class InventoryService {
       SELECT p.*, c.name as category_name
       FROM products p
       LEFT JOIN categories c ON p.category_id = c.id
-      WHERE p.barcode = ? OR p.sku = ?
+      WHERE (p.barcode = ? OR p.sku = ?) AND p.is_active = 1
     `).get(cleanQuery, cleanQuery) as any;
 
     let matchedUnitName = '';
@@ -54,7 +54,7 @@ export class InventoryService {
         FROM product_units u
         JOIN products p ON u.product_id = p.id
         LEFT JOIN categories c ON p.category_id = c.id
-        WHERE u.barcode = ?
+        WHERE u.barcode = ? AND p.is_active = 1
       `).get(cleanQuery) as any;
 
       if (unit) {
@@ -82,7 +82,7 @@ export class InventoryService {
         SELECT p.*, c.name as category_name
         FROM products p
         LEFT JOIN categories c ON p.category_id = c.id
-        WHERE p.name LIKE ?
+        WHERE p.name LIKE ? AND p.is_active = 1
         LIMIT 1
       `).get(`%${cleanQuery}%`) as any;
     }
@@ -126,7 +126,7 @@ export class InventoryService {
       SELECT p.*, c.name as category_name
       FROM products p
       LEFT JOIN categories c ON p.category_id = c.id
-      WHERE p.name LIKE ? OR p.barcode LIKE ? OR p.sku LIKE ?
+      WHERE (p.name LIKE ? OR p.barcode LIKE ? OR p.sku LIKE ?) AND p.is_active = 1
       ORDER BY p.name ASC
       LIMIT ?
     `).all(q, q, q, limit) as any[];

@@ -46,6 +46,7 @@ interface AuthContextType {
   }) => Promise<{
     success: boolean;
     user?: User;
+    token?: string;
     tenantId?: string;
     storeName?: string;
     recoveryKey?: string;

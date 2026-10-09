@@ -14,10 +14,9 @@
     "skipLibCheck": true,
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true,
-    "baseUrl": ".",
     "paths": {
-      "@/*": ["client/src/*"],
-      "@server/*": ["server/*"]
+      "@/*": ["./client/src/*"],
+      "@server/*": ["./server/*"]
     }
   },
   "include": ["client/src", "server", "vite.config.ts"]

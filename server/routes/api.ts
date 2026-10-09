@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import crypto from 'crypto';
 import db from '../db/database';
 import { getTenantDatabase, tenantContext, getAllTenantSummaries, sanitizeTenantId, defaultDb, getAllTenantIds } from '../db/tenant';
+import { requireRole } from '../middleware/tenant';
 import { createAuthToken, verifySecret, hashSecret, createOtpSessionToken, verifyOtpSessionToken, createPinSessionToken, verifyPinSessionToken, generateRecoveryKey } from '../utils/auth-token';
 import { AccountingService } from '../services/accounting';
 import { PPOBService } from '../services/ppob';
@@ -354,7 +355,7 @@ apiRouter.post('/auth/register-send-otp', async (req: Request, res: Response) =>
       success: true,
       maskedEmail: maskEmail(cleanEmail),
       simulated: mailResult.simulated,
-      devOtp: mailResult.simulated ? otpCode : undefined,
+      devOtp: (process.env.NODE_ENV !== 'production' && mailResult.simulated) ? otpCode : undefined,
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -525,7 +526,7 @@ apiRouter.post('/auth/forgot-password', async (req: Request, res: Response) => {
       tenantId: resolvedTenantId,
       maskedEmail: maskEmail(cleanEmail),
       simulated: mailResult.simulated,
-      devOtp: mailResult.simulated ? otpCode : undefined,
+      devOtp: (process.env.NODE_ENV !== 'production' && mailResult.simulated) ? otpCode : undefined,
       message: 'Kode OTP reset kata sandi telah dikirim ke email Anda',
     });
   } catch (err: any) {
@@ -935,7 +936,7 @@ apiRouter.get('/users', (_req: Request, res: Response) => {
 });
 
 // Tambah Akun Operator Baru (Admin / Owner Only)
-apiRouter.post('/users', (req: Request, res: Response) => {
+apiRouter.post('/users', requireRole('owner'), (req: Request, res: Response) => {
   try {
     const { username, password, name, role, pin } = req.body;
     if (!username || !password || !name) {
@@ -972,7 +973,7 @@ apiRouter.post('/users', (req: Request, res: Response) => {
 });
 
 // Edit Akun Operator
-apiRouter.put('/users/:id', (req: Request, res: Response) => {
+apiRouter.put('/users/:id', requireRole('owner'), (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const { name, role, password, pin, is_active } = req.body;
@@ -1000,7 +1001,7 @@ apiRouter.put('/users/:id', (req: Request, res: Response) => {
 });
 
 // Hapus Akun Operator (Proteksi Owner)
-apiRouter.delete('/users/:id', (req: Request, res: Response) => {
+apiRouter.delete('/users/:id', requireRole('owner'), (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const existing = db.prepare('SELECT * FROM users WHERE id = ?').get(id) as any;
@@ -1317,11 +1318,14 @@ apiRouter.get('/products/search', (req: Request, res: Response) => {
   res.json(list);
 });
 
-apiRouter.get('/products', (_req: Request, res: Response) => {
+apiRouter.get('/products', (req: Request, res: Response) => {
+  const includeInactive = req.query.include_inactive === 'true';
+  const whereClause = includeInactive ? '' : 'WHERE p.is_active = 1';
   const products = db.prepare(`
     SELECT p.*, c.name as category_name
     FROM products p
     LEFT JOIN categories c ON p.category_id = c.id
+    ${whereClause}
     ORDER BY p.name ASC
   `).all() as any[];
 
@@ -1451,21 +1455,29 @@ apiRouter.put('/products/:id', (req: Request, res: Response) => {
 
 apiRouter.delete('/products/:id', (req: Request, res: Response) => {
   try {
-    const id = parseInt(req.params.id as string, 10);
-    const orderItemCount = (db.prepare('SELECT COUNT(*) as c FROM order_items WHERE product_id = ?').get(id) as any).c;
-    if (orderItemCount > 0) {
+    const id = parseInt(String(req.params.id), 10);
+    const orderItemCount = (db.prepare('SELECT COUNT(*) as c FROM order_items WHERE product_id = ?').get(id) as any)?.c || 0;
+    const poItemCount = (db.prepare('SELECT COUNT(*) as c FROM purchase_order_items WHERE product_id = ?').get(id) as any)?.c || 0;
+    const returnItemCount = (db.prepare('SELECT COUNT(*) as c FROM sales_return_items WHERE product_id = ?').get(id) as any)?.c || 0;
+
+    if (orderItemCount > 0 || poItemCount > 0 || returnItemCount > 0) {
       db.prepare('UPDATE products SET is_active = 0 WHERE id = ?').run(id);
       return res.json({ success: true, message: 'Produk dinonaktifkan karena memiliki riwayat transaksi' });
     }
 
-    const tx = db.transaction(() => {
-      db.prepare('DELETE FROM product_units WHERE product_id = ?').run(id);
-      db.prepare('DELETE FROM product_tiers WHERE product_id = ?').run(id);
-      db.prepare('DELETE FROM product_batches WHERE product_id = ?').run(id);
-      db.prepare('DELETE FROM products WHERE id = ?').run(id);
-    });
-    tx();
-    res.json({ success: true, message: 'Produk berhasil dihapus' });
+    try {
+      const tx = db.transaction(() => {
+        db.prepare('DELETE FROM product_units WHERE product_id = ?').run(id);
+        db.prepare('DELETE FROM product_tiers WHERE product_id = ?').run(id);
+        db.prepare('DELETE FROM product_batches WHERE product_id = ?').run(id);
+        db.prepare('DELETE FROM products WHERE id = ?').run(id);
+      });
+      tx();
+      res.json({ success: true, message: 'Produk berhasil dihapus' });
+    } catch {
+      db.prepare('UPDATE products SET is_active = 0 WHERE id = ?').run(id);
+      res.json({ success: true, message: 'Produk dinonaktifkan karena terkait data lain' });
+    }
   } catch (err: any) {
     res.status(400).json({ error: err.message });
   }
@@ -1564,6 +1576,28 @@ apiRouter.post('/inventory/goods-receipt', (req: Request, res: Response) => {
         },
       ],
     });
+
+    // Jika bayar tunai (1-1001), selaraskan laci kasir jika ada shift aktif yang sedang buka
+    if (credAccount === '1-1001') {
+      const activeShift = db.prepare("SELECT id, cashier_id FROM shifts WHERE status = 'OPEN' ORDER BY id DESC LIMIT 1").get() as any;
+      if (activeShift) {
+        db.prepare(`
+          INSERT INTO shift_cash_logs (shift_id, cashier_id, type, amount, reason)
+          VALUES (?, ?, 'CASH_OUT', ?, ?)
+        `).run(
+          activeShift.id,
+          activeShift.cashier_id || 1,
+          totalPurchase,
+          `Pembelian stok tunai: ${prod?.name || 'Produk'} (${poNo})`
+        );
+
+        db.prepare(`
+          UPDATE shifts 
+          SET total_cash_out = total_cash_out + ?, expected_cash = expected_cash - ?
+          WHERE id = ?
+        `).run(totalPurchase, totalPurchase, activeShift.id);
+      }
+    }
 
     res.json({ 
       success: true, 
@@ -1756,7 +1790,7 @@ apiRouter.post('/ppob/sync-catalog', async (_req: Request, res: Response) => {
 
 apiRouter.post('/ppob/sync-status/:refId', async (req: Request, res: Response) => {
   try {
-    const { refId } = req.params;
+    const refId = String(req.params.refId);
     const result = await PPOBService.syncTransactionStatus(refId);
     res.json(result);
   } catch (err: any) {
@@ -1820,9 +1854,9 @@ apiRouter.get('/ppob/deposit/history', (_req: Request, res: Response) => {
   }
 });
 
-apiRouter.post('/ppob/deposit/:refId/approve', async (req: Request, res: Response) => {
+apiRouter.post('/ppob/deposit/:refId/approve', requireRole('owner'), async (req: Request, res: Response) => {
   try {
-    const { refId } = req.params;
+    const refId = String(req.params.refId);
     const result = await PPOBService.approveDeposit(refId);
     res.json(result);
   } catch (err: any) {
@@ -1830,9 +1864,9 @@ apiRouter.post('/ppob/deposit/:refId/approve', async (req: Request, res: Respons
   }
 });
 
-apiRouter.post('/ppob/deposit/:refId/reject', (req: Request, res: Response) => {
+apiRouter.post('/ppob/deposit/:refId/reject', requireRole('owner'), (req: Request, res: Response) => {
   try {
-    const { refId } = req.params;
+    const refId = String(req.params.refId);
     const { reason } = req.body;
     const result = PPOBService.rejectDeposit(refId, reason);
     res.json(result);
@@ -1843,7 +1877,7 @@ apiRouter.post('/ppob/deposit/:refId/reject', (req: Request, res: Response) => {
 
 apiRouter.post('/ppob/deposit/:refId/sync-status', async (req: Request, res: Response) => {
   try {
-    const { refId } = req.params;
+    const refId = String(req.params.refId);
     const result = await PPOBService.syncDepositTicketStatus(refId);
     res.json(result);
   } catch (err: any) {
@@ -2358,11 +2392,19 @@ apiRouter.post('/returns', (req: Request, res: Response) => {
         });
 
         if (shift_id) {
-          AccountingService.recordCashMovement({
-            type: 'CASH_OUT',
-            amount: totalRefund,
-            reason: `Pengembalian kas retur ${returnNo} (${order.invoice_no})`,
-          });
+          const activeShift = db.prepare("SELECT id, cashier_id, status FROM shifts WHERE id = ?").get(shift_id) as any;
+          if (activeShift && activeShift.status === 'OPEN') {
+            db.prepare(`
+              INSERT INTO shift_cash_logs (shift_id, cashier_id, type, amount, reason)
+              VALUES (?, ?, 'CASH_OUT', ?, ?)
+            `).run(shift_id, order.cashier_id || activeShift.cashier_id || 1, totalRefund, `Pengembalian kas retur ${returnNo} (${order.invoice_no})`);
+
+            db.prepare(`
+              UPDATE shifts 
+              SET total_cash_out = total_cash_out + ?, expected_cash = expected_cash - ?
+              WHERE id = ?
+            `).run(totalRefund, totalRefund, shift_id);
+          }
         }
       } else {
         // Pemotongan Piutang Usaha Kasbon (Akun 1-1004)
@@ -2508,7 +2550,7 @@ apiRouter.get('/operational-transactions', (req: Request, res: Response) => {
 
 apiRouter.post('/operational-transactions', (req: Request, res: Response) => {
   try {
-    const { type, category, description, amount, payment_source, cashier_id, shift_id } = req.body;
+    const { type, category, description, amount, payment_source, account_code, cashier_id, shift_id } = req.body;
     const cleanAmount = parseFloat(amount);
     if (!cleanAmount || cleanAmount <= 0) {
       return res.status(400).json({ error: 'Nominal transaksi harus lebih dari 0' });
@@ -2517,7 +2559,7 @@ apiRouter.post('/operational-transactions', (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Kategori dan keterangan transaksi wajib diisi' });
     }
     const cleanType = type === 'INCOME' ? 'INCOME' : 'EXPENSE';
-    const cleanSource = payment_source === '1-1002' ? '1-1002' : '1-1001';
+    const cleanSource = (payment_source || account_code) === '1-1002' ? '1-1002' : '1-1001';
 
     const todayStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
     const prefix = cleanType === 'EXPENSE' ? 'BBN' : 'PMS';
@@ -2543,13 +2585,14 @@ apiRouter.post('/operational-transactions', (req: Request, res: Response) => {
 
       // 2. Double-entry Journal Entry
       if (cleanType === 'EXPENSE') {
+        const expenseAccount = category === 'Selisih Kas' ? '5-1003' : '6-1001';
         AccountingService.createJournalEntry({
           reference_type: 'EXPENSE',
           reference_id: txNo,
           description: `Pengeluaran [${category}]: ${description}`,
           lines: [
             {
-              account_code: '5-1003',
+              account_code: expenseAccount,
               debit: cleanAmount,
               credit: 0,
               memo: `${category}: ${description}`,
@@ -2564,11 +2607,19 @@ apiRouter.post('/operational-transactions', (req: Request, res: Response) => {
         });
 
         if (cleanSource === '1-1001' && shift_id) {
-          AccountingService.recordCashMovement({
-            type: 'CASH_OUT',
-            amount: cleanAmount,
-            reason: `[${category}] ${description}`,
-          });
+          const activeShift = db.prepare("SELECT id, cashier_id, status FROM shifts WHERE id = ?").get(shift_id) as any;
+          if (activeShift && activeShift.status === 'OPEN') {
+            db.prepare(`
+              INSERT INTO shift_cash_logs (shift_id, cashier_id, type, amount, reason)
+              VALUES (?, ?, 'CASH_OUT', ?, ?)
+            `).run(shift_id, cashier_id || activeShift.cashier_id || 1, cleanAmount, `[${category}] ${description}`);
+
+            db.prepare(`
+              UPDATE shifts 
+              SET total_cash_out = total_cash_out + ?, expected_cash = expected_cash - ?
+              WHERE id = ?
+            `).run(cleanAmount, cleanAmount, shift_id);
+          }
         }
       } else {
         AccountingService.createJournalEntry({
@@ -2592,11 +2643,19 @@ apiRouter.post('/operational-transactions', (req: Request, res: Response) => {
         });
 
         if (cleanSource === '1-1001' && shift_id) {
-          AccountingService.recordCashMovement({
-            type: 'CASH_IN',
-            amount: cleanAmount,
-            reason: `[${category}] ${description}`,
-          });
+          const activeShift = db.prepare("SELECT id, cashier_id, status FROM shifts WHERE id = ?").get(shift_id) as any;
+          if (activeShift && activeShift.status === 'OPEN') {
+            db.prepare(`
+              INSERT INTO shift_cash_logs (shift_id, cashier_id, type, amount, reason)
+              VALUES (?, ?, 'CASH_IN', ?, ?)
+            `).run(shift_id, cashier_id || activeShift.cashier_id || 1, cleanAmount, `[${category}] ${description}`);
+
+            db.prepare(`
+              UPDATE shifts 
+              SET total_cash_in = total_cash_in + ?, expected_cash = expected_cash + ?
+              WHERE id = ?
+            `).run(cleanAmount, cleanAmount, shift_id);
+          }
         }
       }
     })();
@@ -3429,7 +3488,7 @@ apiRouter.get('/settings', (_req: Request, res: Response) => {
   res.json(settingsObj);
 });
 
-apiRouter.post('/settings', (req: Request, res: Response) => {
+apiRouter.post('/settings', requireRole('owner'), (req: Request, res: Response) => {
   const entries = Object.entries(req.body);
   const updateSetting = db.prepare('INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)');
 
@@ -3530,7 +3589,7 @@ apiRouter.get('/backup/settings', (_req: Request, res: Response) => {
   }
 });
 
-apiRouter.post('/backup/settings', (req: Request, res: Response) => {
+apiRouter.post('/backup/settings', requireRole('owner'), (req: Request, res: Response) => {
   try {
     const updated = BackupService.updateSettings(req.body);
     res.json({ success: true, settings: updated });
@@ -3539,7 +3598,7 @@ apiRouter.post('/backup/settings', (req: Request, res: Response) => {
   }
 });
 
-apiRouter.get('/backup/list', (_req: Request, res: Response) => {
+apiRouter.get('/backup/list', requireRole('owner'), (_req: Request, res: Response) => {
   try {
     const backups = BackupService.listBackups();
     res.json(backups);
@@ -3548,7 +3607,7 @@ apiRouter.get('/backup/list', (_req: Request, res: Response) => {
   }
 });
 
-apiRouter.post('/backup/create', async (req: Request, res: Response) => {
+apiRouter.post('/backup/create', requireRole('owner'), async (req: Request, res: Response) => {
   try {
     const reason = req.body?.reason || 'manual';
     const backupItem = await BackupService.createBackup(reason);
@@ -3558,7 +3617,7 @@ apiRouter.post('/backup/create', async (req: Request, res: Response) => {
   }
 });
 
-apiRouter.get('/backup/download/:filename', (req: Request, res: Response) => {
+apiRouter.get('/backup/download/:filename', requireRole('owner'), (req: Request, res: Response) => {
   try {
     const filename = req.params.filename as string;
     const filePath = BackupService.getBackupFilePath(filename);
@@ -3568,7 +3627,7 @@ apiRouter.get('/backup/download/:filename', (req: Request, res: Response) => {
   }
 });
 
-apiRouter.delete('/backup/:filename', (req: Request, res: Response) => {
+apiRouter.delete('/backup/:filename', requireRole('owner'), (req: Request, res: Response) => {
   try {
     const filename = req.params.filename as string;
     BackupService.deleteBackup(filename);
@@ -3578,7 +3637,7 @@ apiRouter.delete('/backup/:filename', (req: Request, res: Response) => {
   }
 });
 
-apiRouter.post('/backup/restore', async (req: Request, res: Response) => {
+apiRouter.post('/backup/restore', requireRole('owner'), async (req: Request, res: Response) => {
   try {
     const { filename } = req.body;
     if (!filename) return res.status(400).json({ error: 'Nama file backup diperlukan' });

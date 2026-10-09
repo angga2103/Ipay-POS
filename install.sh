@@ -211,7 +211,7 @@ After=network.target
 Type=simple
 User=root
 WorkingDirectory=$PROJECT_DIR
-ExecStart=$(which npm) run dev:server
+ExecStart=$(which npm) start
 Restart=always
 RestartSec=5
 Environment=NODE_ENV=production

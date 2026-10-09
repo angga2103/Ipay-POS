@@ -42,16 +42,18 @@ export function tenantMiddleware(req: Request, res: Response, next: NextFunction
     });
   }
 
-  // Protected Routes Guard for multi-tenant stores:
+  // Protected Routes Guard for stores:
   const path = req.path || '';
   const isPublicRoute = 
     path.startsWith('/auth/') || 
     path === '/tenant/info' || 
     path === '/tenant/list' || 
     path === '/ppob/webhook' || 
-    path === '/users';
+    (path === '/users' && req.method === 'GET');
 
-  if (!isPublicRoute && tenantId !== 'default' && !tokenPayload) {
+  const requiresAuth = !isPublicRoute && (process.env.NODE_ENV === 'production' || tenantId !== 'default');
+
+  if (requiresAuth && !tokenPayload) {
     return res.status(401).json({
       error: 'Sesi autentikasi diperlukan untuk mengakses data toko ini. Silakan login kembali.'
     });
@@ -69,3 +71,28 @@ export function tenantMiddleware(req: Request, res: Response, next: NextFunction
     next();
   });
 }
+
+/**
+ * Role-Based Access Control (RBAC) middleware
+ */
+export function requireRole(...roles: string[]) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    // If running in development/test on default store without auth, bypass
+    if (process.env.NODE_ENV !== 'production' && req.tenantId === 'default' && !req.user) {
+      return next();
+    }
+
+    if (!req.user) {
+      return res.status(401).json({ error: 'Sesi autentikasi diperlukan' });
+    }
+
+    if (!roles.includes(req.user.role)) {
+      return res.status(403).json({
+        error: `Akses ditolak: Fitur ini hanya dapat diakses oleh role [${roles.join(', ')}]`,
+      });
+    }
+
+    next();
+  };
+}
+

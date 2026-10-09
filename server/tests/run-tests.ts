@@ -25,6 +25,7 @@ async function runAllTests() {
   // Ensure deposit has sufficient test funds via balanced journal
   AccountingService.createJournalEntry({
     reference_type: 'TOPUP',
+    reference_id: 'TEST-TOPUP-001',
     description: 'Test Deposit Injection',
     lines: [
       { account_code: '1-1003', debit: 2000000, credit: 0 },

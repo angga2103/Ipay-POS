@@ -111,10 +111,26 @@ export class ShiftService {
         COALESCE(SUM(total_retail), 0) as retail_sales,
         COALESCE(SUM(total_ppob), 0) as ppob_sales,
         COALESCE(SUM(grand_total), 0) as total_sales,
-        COALESCE(SUM(CASE WHEN payment_method = 'CASH' THEN grand_total ELSE 0 END), 0) as cash_sales,
-        COALESCE(SUM(CASE WHEN payment_method = 'QRIS' THEN grand_total ELSE 0 END), 0) as qris_sales,
-        COALESCE(SUM(CASE WHEN payment_method = 'EDC' THEN grand_total ELSE 0 END), 0) as edc_sales,
-        COALESCE(SUM(CASE WHEN payment_method = 'KASBON' THEN grand_total ELSE 0 END), 0) as kasbon_sales
+        COALESCE(SUM(CASE 
+          WHEN payment_method = 'CASH' THEN grand_total 
+          WHEN payment_method = 'SPLIT' THEN COALESCE(CAST(json_extract(split_details, '$.cash') AS REAL), 0)
+          ELSE 0 
+        END), 0) as cash_sales,
+        COALESCE(SUM(CASE 
+          WHEN payment_method = 'QRIS' THEN grand_total 
+          WHEN payment_method = 'SPLIT' THEN COALESCE(CAST(json_extract(split_details, '$.qris') AS REAL), 0)
+          ELSE 0 
+        END), 0) as qris_sales,
+        COALESCE(SUM(CASE 
+          WHEN payment_method = 'EDC' THEN grand_total 
+          WHEN payment_method = 'SPLIT' THEN COALESCE(CAST(json_extract(split_details, '$.edc') AS REAL), 0)
+          ELSE 0 
+        END), 0) as edc_sales,
+        COALESCE(SUM(CASE 
+          WHEN payment_method = 'KASBON' THEN grand_total 
+          WHEN payment_method = 'SPLIT' THEN COALESCE(CAST(json_extract(split_details, '$.kasbon') AS REAL), 0)
+          ELSE 0 
+        END), 0) as kasbon_sales
       FROM orders
       WHERE shift_id = ? AND status = 'PAID'
     `).get(shiftId) as any;

@@ -8,7 +8,7 @@ export interface JournalLineInput {
 }
 
 export interface CreateJournalEntryInput {
-  reference_type: 'SALE' | 'PPOB_PURCHASE' | 'PPOB_REVERSAL' | 'EXPENSE' | 'SHIFT_ADJUSTMENT' | 'STOCK_ADJUSTMENT' | 'PURCHASE' | 'OPENING_BALANCE' | 'DEBT_PAYMENT' | 'SUPPLIER_PAYMENT';
+  reference_type: 'SALE' | 'PPOB_PURCHASE' | 'PPOB_REVERSAL' | 'EXPENSE' | 'INCOME' | 'TOPUP' | 'RETURN' | 'SHIFT_ADJUSTMENT' | 'STOCK_ADJUSTMENT' | 'PURCHASE' | 'OPENING_BALANCE' | 'DEBT_PAYMENT' | 'SUPPLIER_PAYMENT' | 'SERVICE' | 'OTHER';
   reference_id: string;
   description: string;
   lines: JournalLineInput[];
@@ -216,8 +216,15 @@ export class AccountingService {
     product_name: string;
     selling_price: number;
     cost_price: number;
-    refund_method: 'CASH' | 'DEPOSIT_CREDIT';
+    refund_method?: 'CASH' | 'DEPOSIT_CREDIT' | 'KASBON_REDUCTION' | 'BANK_TRANSFER';
+    refund_account?: string;
+    customer_id?: number;
   }) {
+    const refundAcc = params.refund_account || (
+      params.refund_method === 'KASBON_REDUCTION' ? '1-1004' :
+      params.refund_method === 'BANK_TRANSFER' ? '1-1002' : '1-1001'
+    );
+
     const lines: JournalLineInput[] = [
       // 1. Restore Deposit PPOB (Modal kembali ke saldo)
       {
@@ -240,14 +247,52 @@ export class AccountingService {
         credit: 0,
         memo: `Pembalikan omzet PPOB gagal [${params.product_name}]`,
       },
-      // 4. Return money to customer from cash drawer
+      // 4. Return money to customer from cash drawer / reduce kasbon / bank
       {
-        account_code: '1-1001', // Kas Laci Kasir
+        account_code: refundAcc,
         debit: 0,
         credit: params.selling_price,
-        memo: `Pengembalian dana (refund) tunai pelanggan [${params.product_name}]`,
+        memo: refundAcc === '1-1004'
+          ? `Pemotongan piutang kasbon pelanggan [${params.product_name}]`
+          : `Pengembalian dana (refund) pelanggan [${params.product_name}]`,
       },
     ];
+
+    // If KASBON reduction, also reduce customer's debt in customers table
+    if (refundAcc === '1-1004' && params.customer_id) {
+      try {
+        db.prepare('UPDATE customers SET current_debt = MAX(0, current_debt - ?) WHERE id = ?')
+          .run(params.selling_price, params.customer_id);
+      } catch (e) {
+        console.warn('Could not update customer debt on PPOB reversal:', e);
+      }
+    }
+
+    // If CASH refund and active shift open, sync with cash drawer
+    if (refundAcc === '1-1001') {
+      try {
+        const activeShift = db.prepare("SELECT id, cashier_id, status FROM shifts WHERE status = 'OPEN' ORDER BY id DESC LIMIT 1").get() as any;
+        if (activeShift) {
+          db.prepare(`
+            INSERT INTO shift_cash_logs (shift_id, cashier_id, type, amount, reason)
+            VALUES (?, ?, 'CASH_OUT', ?, ?)
+          `).run(
+            activeShift.id,
+            activeShift.cashier_id || 1,
+            params.selling_price,
+            `Refund PPOB gagal: ${params.product_name} (${params.invoice_no})`
+          );
+          db.prepare(`
+            UPDATE shifts 
+            SET total_cash_out = total_cash_out + ?,
+                expected_cash = expected_cash - ?
+            WHERE id = ?
+          `).run(params.selling_price, params.selling_price, activeShift.id);
+        }
+      } catch (e) {
+        console.warn('Could not sync shift cash drawer on PPOB reversal:', e);
+      }
+    }
 
     return this.createJournalEntry({
       reference_type: 'PPOB_REVERSAL',
@@ -566,7 +611,14 @@ export class AccountingService {
 
     // Revenue accounts (Normal Credit): Revenue = Credit - Debit
     const retailRev = getAccountSum('4-1001');
-    const retailRevenue = retailRev.total_credit - retailRev.total_debit;
+    const grossRetailRevenue = retailRev.total_credit - retailRev.total_debit;
+
+    // Sales Discounts / Contra-Revenue (4-1004, Normal Debit: Debit - Credit)
+    const discountSum = getAccountSum('4-1004');
+    const salesDiscounts = discountSum.total_debit - discountSum.total_credit;
+
+    // Net retail revenue after sales discounts
+    const netRetailRevenue = Math.max(0, grossRetailRevenue - salesDiscounts);
 
     const ppobRev = getAccountSum('4-1002');
     const ppobRevenue = ppobRev.total_credit - ppobRev.total_debit;
@@ -581,14 +633,19 @@ export class AccountingService {
     const ppobCost = getAccountSum('5-1002');
     const ppobHpp = ppobCost.total_debit - ppobCost.total_credit;
 
-    const opExpense = getAccountSum('5-1003');
-    const operatingExpenses = opExpense.total_debit - opExpense.total_credit;
+    // Operating expenses (6-1001 Beban Operasional Toko + 5-1003 Selisih Kas/Penyusutan)
+    const opExpense5 = getAccountSum('5-1003');
+    const opExpense6 = getAccountSum('6-1001');
+    const generalExpenses = opExpense6.total_debit - opExpense6.total_credit;
+    const cashDiscrepancyExpense = opExpense5.total_debit - opExpense5.total_credit;
+    const operatingExpenses = generalExpenses + cashDiscrepancyExpense;
 
     // Gross profits
-    const retailGrossProfit = retailRevenue - retailHpp;
+    const retailGrossProfit = netRetailRevenue - retailHpp;
     const ppobGrossProfit = ppobRevenue - ppobHpp;
 
-    const totalRevenue = retailRevenue + ppobRevenue + otherRevenue;
+    const totalOperationalRevenue = netRetailRevenue + ppobRevenue;
+    const totalRevenue = totalOperationalRevenue + otherRevenue;
     const totalCOGS = retailHpp + ppobHpp;
     const totalGrossProfit = totalRevenue - totalCOGS;
     const netProfit = totalGrossProfit - operatingExpenses;
@@ -596,10 +653,12 @@ export class AccountingService {
     return {
       period: { start, end },
       retail: {
-        revenue: retailRevenue,
+        grossRevenue: grossRetailRevenue,
+        discounts: salesDiscounts,
+        revenue: netRetailRevenue,
         cogs: retailHpp,
         grossProfit: retailGrossProfit,
-        marginPercent: retailRevenue > 0 ? (retailGrossProfit / retailRevenue) * 100 : 0,
+        marginPercent: netRetailRevenue > 0 ? (retailGrossProfit / netRetailRevenue) * 100 : 0,
       },
       ppob: {
         revenue: ppobRevenue,
@@ -607,8 +666,11 @@ export class AccountingService {
         grossProfit: ppobGrossProfit,
         marginPercent: ppobRevenue > 0 ? (ppobGrossProfit / ppobRevenue) * 100 : 0,
       },
+      discounts: salesDiscounts,
       otherRevenue,
       operatingExpenses,
+      generalExpenses,
+      cashDiscrepancyExpense,
       combined: {
         totalRevenue,
         totalCOGS,

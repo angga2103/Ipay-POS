@@ -50,39 +50,41 @@ if (fs.existsSync(distPath)) {
   });
 }
 
-app.listen(PORT, () => {
-  console.log(`===================================================`);
-  console.log(`🚀 POS IPAY Multi-Tenant Server running at http://localhost:${PORT}`);
-  console.log(`   - REST API: http://localhost:${PORT}/api`);
-  console.log(`   - PPOB Webhook: http://localhost:${PORT}/api/ppob/webhook`);
-  console.log(`   - Mode: Multi-Tenant Database-per-Tenant`);
-  console.log(`===================================================`);
+if (process.env.NODE_ENV !== 'test') {
+  app.listen(PORT, () => {
+    console.log(`===================================================`);
+    console.log(`🚀 POS IPAY Multi-Tenant Server running at http://localhost:${PORT}`);
+    console.log(`   - REST API: http://localhost:${PORT}/api`);
+    console.log(`   - PPOB Webhook: http://localhost:${PORT}/api/ppob/webhook`);
+    console.log(`   - Mode: Multi-Tenant Database-per-Tenant`);
+    console.log(`===================================================`);
 
-  // Background Auto-Poller: Periksa status transaksi PENDING setiap 20 detik ke ipay.my.id untuk SEMUA tenant
-  setInterval(async () => {
-    try {
-      const { PPOBService } = await import('./services/ppob');
-      const tenantIds = getAllTenantIds();
-      for (const tId of tenantIds) {
-        const tenantDb = getTenantDatabase(tId);
-        await tenantContext.run({ tenantId: tId, db: tenantDb }, async () => {
-          try {
-            await PPOBService.syncAllPendingTransactions();
-          } catch {
-            // ignore poller error per tenant
-          }
-        });
+    // Background Auto-Poller: Periksa status transaksi PENDING setiap 20 detik ke ipay.my.id untuk SEMUA tenant
+    setInterval(async () => {
+      try {
+        const { PPOBService } = await import('./services/ppob');
+        const tenantIds = getAllTenantIds();
+        for (const tId of tenantIds) {
+          const tenantDb = getTenantDatabase(tId);
+          await tenantContext.run({ tenantId: tId, db: tenantDb }, async () => {
+            try {
+              await PPOBService.syncAllPendingTransactions();
+            } catch {
+              // ignore poller error per tenant
+            }
+          });
+        }
+      } catch {
+        // ignore background poller errors
       }
-    } catch {
-      // ignore background poller errors
-    }
-  }, 20000);
+    }, 20000);
 
-  // Start dynamic database auto-backup scheduler
-  import('./services/backup').then(({ BackupService }) => {
-    BackupService.startScheduler();
-    console.log('   - Dynamic Multi-Tenant Auto-Backup: Scheduler aktif');
-  }).catch(() => {});
-});
+    // Start dynamic database auto-backup scheduler
+    import('./services/backup').then(({ BackupService }) => {
+      BackupService.startScheduler();
+      console.log('   - Dynamic Multi-Tenant Auto-Backup: Scheduler aktif');
+    }).catch(() => {});
+  });
+}
 
 export default app;

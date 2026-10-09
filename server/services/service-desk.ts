@@ -76,14 +76,41 @@ export class ServiceDeskService {
 
     const serviceId = res.lastInsertRowid;
 
-    // If down payment is given in cash, record it to cash drawer
+    // If down payment is given in cash, record it to cash drawer & revenue
     if (dp > 0) {
-      AccountingService.recordCashMovement({
-        type: 'CASH_IN',
-        amount: dp,
-        reason: `Uang Muka (DP) Servis ${serviceNo} - ${input.customer_name} (${input.device_brand_model})`,
-        shiftNumber: 'SERVIS-DP',
+      AccountingService.createJournalEntry({
+        reference_type: 'SERVICE',
+        reference_id: `${serviceNo}-DP`,
+        description: `Uang Muka (DP) Servis ${serviceNo} - ${input.customer_name} (${input.device_brand_model})`,
+        lines: [
+          {
+            account_code: '1-1001',
+            debit: dp,
+            credit: 0,
+            memo: `Penerimaan kas DP servis ${serviceNo}`,
+          },
+          {
+            account_code: '4-1003',
+            debit: 0,
+            credit: dp,
+            memo: `Pendapatan servis HP (DP) ${serviceNo}`,
+          },
+        ],
       });
+
+      const activeShift = db.prepare("SELECT id, cashier_id, status FROM shifts WHERE status = 'OPEN' ORDER BY id DESC LIMIT 1").get() as any;
+      if (activeShift) {
+        db.prepare(`
+          INSERT INTO shift_cash_logs (shift_id, cashier_id, type, amount, reason)
+          VALUES (?, ?, 'CASH_IN', ?, ?)
+        `).run(activeShift.id, activeShift.cashier_id || 1, dp, `DP Servis ${serviceNo}`);
+
+        db.prepare(`
+          UPDATE shifts 
+          SET total_cash_in = total_cash_in + ?, expected_cash = expected_cash + ?
+          WHERE id = ?
+        `).run(dp, dp, activeShift.id);
+      }
     }
 
     return this.getById(Number(serviceId));
@@ -156,6 +183,23 @@ export class ServiceDeskService {
             },
           ],
         });
+
+        // Sync with active shift cash drawer if payment is in CASH
+        if (params.payment_method === 'CASH') {
+          const activeShift = db.prepare("SELECT id, cashier_id, status FROM shifts WHERE status = 'OPEN' ORDER BY id DESC LIMIT 1").get() as any;
+          if (activeShift) {
+            db.prepare(`
+              INSERT INTO shift_cash_logs (shift_id, cashier_id, type, amount, reason)
+              VALUES (?, ?, 'CASH_IN', ?, ?)
+            `).run(activeShift.id, activeShift.cashier_id || 1, remainingToPay, `Pelunasan Servis ${service.service_no}`);
+
+            db.prepare(`
+              UPDATE shifts 
+              SET total_cash_in = total_cash_in + ?, expected_cash = expected_cash + ?
+              WHERE id = ?
+            `).run(remainingToPay, remainingToPay, activeShift.id);
+          }
+        }
       }
     });
 
