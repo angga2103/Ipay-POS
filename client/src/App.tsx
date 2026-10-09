@@ -67,7 +67,7 @@ const MainLayout: React.FC = () => {
             {activeTab === 'inventory' && <InventoryPage />}
             {activeTab === 'ppob' && <PPOBManagerPage />}
             {activeTab === 'shift' && <ShiftManagementPage />}
-            {activeTab === 'accounting' && <AccountingPage />}
+            {activeTab === 'accounting' && <AccountingPage onNavigate={setActiveTab} />}
             {activeTab === 'reports' && <ReportsPage />}
             {activeTab === 'settings' && <SettingsPage />}
           </ErrorBoundary>

@@ -3486,6 +3486,121 @@ apiRouter.post('/accounting/reset-ledger', async (req: Request, res: Response) =
   }
 });
 
+apiRouter.post('/accounting/auto-harmonize', (req: Request, res: Response) => {
+  try {
+    const newStatus = AccountingService.autoHarmonizeOpeningBalance();
+    res.json({
+      success: true,
+      message: 'Pembukuan berhasil diselaraskan otomatis 100%! Seluruh akun aset, persediaan stok, dan hutang kini klop dengan fisik toko.',
+      status: newStatus,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+apiRouter.get('/onboarding/overview', (_req: Request, res: Response) => {
+  try {
+    const storeNameRow = db.prepare("SELECT value FROM settings WHERE key = 'store_name'").get() as any;
+    const storePhoneRow = db.prepare("SELECT value FROM settings WHERE key = 'store_phone'").get() as any;
+    const isProfileConfigured = !!(storeNameRow?.value && storePhoneRow?.value);
+
+    const productCount = (db.prepare('SELECT COUNT(*) as c FROM products WHERE is_active = 1').get() as any).c;
+    const totalInventoryValue = (db.prepare('SELECT COALESCE(SUM(stock_quantity * cost_price), 0) as s FROM products WHERE is_active = 1').get() as any).s;
+    const supplierCount = (db.prepare('SELECT COUNT(*) as c FROM suppliers WHERE is_active = 1').get() as any).c;
+    const customerCount = (db.prepare('SELECT COUNT(*) as c FROM customers WHERE is_active = 1').get() as any).c;
+
+    const openingStatus = AccountingService.getOpeningBalanceStatus();
+    const activeShift = db.prepare("SELECT id, shift_number, opening_cash, opened_at FROM shifts WHERE status = 'OPEN' ORDER BY id DESC LIMIT 1").get() as any;
+
+    const ipayMerchant = db.prepare("SELECT value FROM settings WHERE key = 'ipay_merchant_id'").get() as any;
+    const ipayApiKey = db.prepare("SELECT value FROM settings WHERE key = 'ipay_api_key'").get() as any;
+    const isPpobConfigured = !!(ipayMerchant?.value && ipayApiKey?.value);
+
+    // Roadmap 5 Langkah Toko Baru
+    const steps = [
+      {
+        id: 'step_profile',
+        stepNumber: 1,
+        title: '1. Atur Profil & Informasi Toko',
+        desc: 'Nama toko, nomor telepon, dan alamat untuk dicetak di nota/struk kasir.',
+        isCompleted: isProfileConfigured,
+        badge: isProfileConfigured ? 'Terkonfigurasi' : 'Perlu Diisi',
+        actionUrl: '/settings',
+        actionText: 'Buka Menu Pengaturan',
+      },
+      {
+        id: 'step_products',
+        stepNumber: 2,
+        title: '2. Input Katalog Produk & Stok Awal',
+        desc: 'Daftarkan barang dagangan dengan jumlah stok dan harga modal beli (HPP) agar sistem menghitung total aset gudang toko secara otomatis.',
+        isCompleted: productCount > 0,
+        badge: productCount > 0 ? `${productCount} Produk Terdaftar` : 'Belum Ada Produk',
+        extraInfo: productCount > 0 ? `Total Nilai Stok: Rp ${totalInventoryValue.toLocaleString('id-ID')}` : undefined,
+        actionUrl: '/inventory',
+        actionText: 'Buka Katalog & Stok',
+      },
+      {
+        id: 'step_partners',
+        stepNumber: 3,
+        title: '3. Mitra Supplier & Pelanggan Kasbon (Opsional)',
+        desc: 'Catat mitra distributor untuk belanja restock dan pelanggan langganan yang memiliki catatan hutang/kasbon lama.',
+        isCompleted: supplierCount > 0 || customerCount > 0,
+        badge: `${supplierCount} Supplier • ${customerCount} Pelanggan`,
+        actionUrl: '/suppliers',
+        actionText: 'Kelola Supplier & Kasbon',
+      },
+      {
+        id: 'step_opening',
+        stepNumber: 4,
+        title: '4. Setup Saldo Awal Neraca (Day 1)',
+        desc: 'Inisialisasi uang kas di laci toko, saldo bank, dan deposit awal. Sistem otomatis menyelaraskan Modal Pemilik agar Neraca Saldo seimbang 100%.',
+        isCompleted: openingStatus.is_configured && openingStatus.reconciliation.is_balanced,
+        badge: openingStatus.is_configured 
+          ? (openingStatus.reconciliation.is_balanced ? '100% Seimbang' : 'Perlu Penyelarasan') 
+          : 'Belum Dikonfigurasi',
+        actionUrl: '/accounting',
+        actionText: 'Setup Saldo Awal',
+      },
+      {
+        id: 'step_shift',
+        stepNumber: 5,
+        title: '5. Buka Kasir POS & Mulai Jualan!',
+        desc: 'Buka sesi shift kasir dengan uang modal pecahan di laci, dan Anda siap melayani transaksi pelanggan minimarket & PPOB.',
+        isCompleted: !!activeShift,
+        badge: activeShift ? `Shift Aktif (${activeShift.shift_number})` : 'Kasir Belum Buka',
+        actionUrl: '/pos',
+        actionText: 'Buka Kasir POS',
+      },
+    ];
+
+    const completedCount = steps.filter(s => s.isCompleted).length;
+
+    res.json({
+      success: true,
+      completedCount,
+      totalSteps: steps.length,
+      isFullyOnboarded: completedCount >= 4,
+      steps,
+      accountingDiagnosis: {
+        isConfigured: openingStatus.is_configured,
+        isBalanced: openingStatus.reconciliation.is_balanced,
+        inventoryMatches: openingStatus.reconciliation.inventory_matches,
+        payablesMatches: openingStatus.reconciliation.payables_matches,
+        receivablesMatches: openingStatus.reconciliation.receivables_matches,
+        ppobNegative: openingStatus.balances.ppob_deposit < 0,
+        inventoryCatalogHpp: totalInventoryValue,
+        inventoryRecorded: openingStatus.balances.inventory_value,
+        payablesRecorded: openingStatus.balances.payables,
+        suppliersTotalDebt: openingStatus.reconciliation.supplier_total_debt,
+        ownerEquity: openingStatus.balances.owner_equity,
+      },
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 apiRouter.get('/reports/dashboard', async (_req: Request, res: Response) => {
   const today = new Date().toISOString().slice(0, 10);
 

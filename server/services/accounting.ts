@@ -158,7 +158,7 @@ export class AccountingService {
     }
 
     // 2.1 Potongan & Diskon Penjualan (Contra-Revenue, Normal: DEBIT)
-    const discount = Math.round((sale.discount_amount || 0) * 100) / 100;
+    const discount = Math.round(((sale as any).discount_amount || (sale as any).discount || 0) * 100) / 100;
     if (discount > 0) {
       lines.push({
         account_code: '4-1004', // Potongan & Diskon Penjualan
@@ -585,6 +585,41 @@ export class AccountingService {
         is_balanced: this.getTrialBalance().isBalanced,
       },
     };
+  }
+
+  /**
+   * Harmonize Day-1 Opening Balance with real physical catalog inventory, supplier debt, and customer kasbon.
+   * Auto-resolves any discrepancies, ensures 100% balanced trial balance, and recalculates owner equity.
+   */
+  static autoHarmonizeOpeningBalance() {
+    const totalInventoryHpp = (db.prepare('SELECT COALESCE(SUM(stock_quantity * cost_price), 0) as s FROM products WHERE is_active = 1').get() as any).s;
+    const totalSupplierDebt = (db.prepare('SELECT COALESCE(SUM(current_debt), 0) as s FROM suppliers WHERE is_active = 1').get() as any).s;
+    const totalCustomerDebt = (db.prepare('SELECT COALESCE(SUM(current_debt), 0) as s FROM customers WHERE is_active = 1').get() as any).s;
+
+    const getAccount = (code: string) => db.prepare('SELECT balance FROM chart_of_accounts WHERE code = ?').get(code) as any;
+    const currentCash = Math.max(0, getAccount('1-1001')?.balance || 0);
+    const currentBank = Math.max(0, getAccount('1-1002')?.balance || 0);
+    const currentPpob = Math.max(0, getAccount('1-1003')?.balance || 0);
+
+    const suppliers = db.prepare('SELECT id, current_debt FROM suppliers WHERE is_active = 1 AND current_debt > 0').all() as any[];
+    const supplierDebts = suppliers.map(s => ({ supplier_id: s.id, amount: s.current_debt }));
+
+    const customers = db.prepare('SELECT id, current_debt FROM customers WHERE is_active = 1 AND current_debt > 0').all() as any[];
+    const customerDebts = customers.map(c => ({ customer_id: c.id, amount: c.current_debt }));
+
+    this.recordOpeningBalance({
+      cash_drawer: currentCash,
+      bank_balance: currentBank,
+      ppob_deposit: currentPpob,
+      receivables: totalCustomerDebt,
+      inventory_value: totalInventoryHpp,
+      payables: totalSupplierDebt,
+      supplier_debts: supplierDebts,
+      customer_debts: customerDebts,
+      notes: 'Penyelarasan Otomatis Pembukuan Day-1 dg Nilai Riil Toko',
+    });
+
+    return this.getOpeningBalanceStatus();
   }
 
   /**

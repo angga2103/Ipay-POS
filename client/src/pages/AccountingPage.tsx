@@ -4,12 +4,17 @@ import {
   ArrowRight, Download, RefreshCw, Scale, HelpCircle, 
   PlusCircle, Sparkles, DollarSign, X, Check, FileText,
   Truck, Users, Package, AlertCircle, ArrowUpRight, ShieldCheck,
-  Wallet, Tag, ShoppingBag, Zap, RotateCcw, Key, Trash2
+  Wallet, Tag, ShoppingBag, Zap, RotateCcw, Key, Trash2,
+  Stethoscope, Activity, Info, ExternalLink, ChevronRight
 } from 'lucide-react';
 import { ProfitAndLossReport, JournalEntry, ChartOfAccount, Supplier, Customer, OpeningBalanceStatus, InventoryValuation } from '../types';
 import { CashInOutModal } from '../components/CashInOutModal';
 
-export const AccountingPage: React.FC = () => {
+interface AccountingPageProps {
+  onNavigate?: (tab: string) => void;
+}
+
+export const AccountingPage: React.FC<AccountingPageProps> = ({ onNavigate }) => {
   const [activeTab, setActiveTab] = useState<'pl' | 'journals' | 'ledger' | 'trial_balance' | 'coa' | 'operational'>('pl');
   const [plData, setPlData] = useState<ProfitAndLossReport | null>(null);
   const [journals, setJournals] = useState<JournalEntry[]>([]);
@@ -57,8 +62,25 @@ export const AccountingPage: React.FC = () => {
   const [showCustomerBreakdown, setShowCustomerBreakdown] = useState(false);
   const [isSubmittingOpening, setIsSubmittingOpening] = useState(false);
 
+  // Onboarding & Dokter Pembukuan State
+  const [onboardingData, setOnboardingData] = useState<any>(null);
+  const [isHarmonizing, setIsHarmonizing] = useState(false);
+  const [guideActiveTab, setGuideActiveTab] = useState<'roadmap' | 'dictionary' | 'flow'>('roadmap');
+
   // Educational Guide Modal State
   const [isGuideModalOpen, setIsGuideModalOpen] = useState(false);
+
+  const fetchOnboarding = async () => {
+    try {
+      const res = await fetch('/api/onboarding/overview');
+      const data = await res.json();
+      if (data.success) {
+        setOnboardingData(data);
+      }
+    } catch (err) {
+      console.error('Failed to load onboarding overview:', err);
+    }
+  };
 
   const fetchOperational = async () => {
     setLoadingOperational(true);
@@ -77,6 +99,7 @@ export const AccountingPage: React.FC = () => {
     setLoading(true);
     try {
       fetchOperational();
+      fetchOnboarding();
       const [resPl, resJournals, resTb, resCoa, resSync, resVal, resSup, resCust] = await Promise.all([
         fetch('/api/accounting/profit-loss'),
         fetch('/api/accounting/journals?limit=50'),
@@ -255,7 +278,6 @@ export const AccountingPage: React.FC = () => {
       setIsResetModalOpen(false);
       setResetPin('');
       fetchAccountingData();
-      fetchOpeningStatus();
       if (activeTab === 'ledger') fetchLedger(selectedLedgerAccount);
       if (activeTab === 'operational') fetchOperational();
     } catch (err: any) {
@@ -264,6 +286,40 @@ export const AccountingPage: React.FC = () => {
       setIsSubmittingReset(false);
     }
   };
+
+  // Auto-Harmonize Opening Balance via Dokter Pembukuan
+  const handleAutoHarmonize = async () => {
+    if (!window.confirm('Dokter Pembukuan akan otomatis menyelaraskan:\n\n1. Nilai Persediaan dengan Total Modal HPP di Katalog Produk\n2. Nilai Hutang Usaha dengan Total Hutang Supplier\n3. Nilai Piutang Usaha dengan Total Kasbon Pelanggan\n4. Modal Pemilik dihitung ulang sehingga Neraca Saldo 100% Seimbang.\n\nLanjutkan penyelarasan otomatis sekarang?')) {
+      return;
+    }
+    setIsHarmonizing(true);
+    try {
+      const res = await fetch('/api/accounting/auto-harmonize', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Gagal harmonisasi saldo awal');
+      alert(`✅ ${data.message}`);
+      await fetchAccountingData();
+      if (activeTab === 'ledger') fetchLedger(selectedLedgerAccount);
+    } catch (err: any) {
+      alert('Gagal menyelaraskan: ' + err.message);
+    } finally {
+      setIsHarmonizing(false);
+    }
+  };
+
+  // Discrepancy detection for Dokter Pembukuan
+  const hasDiscrepancy = Boolean(
+    syncStatus?.is_configured && (
+      !syncStatus.reconciliation?.is_balanced ||
+      !syncStatus.reconciliation?.inventory_matches ||
+      !syncStatus.reconciliation?.payables_matches ||
+      !syncStatus.reconciliation?.receivables_matches ||
+      (syncStatus.balances?.ppob_deposit ?? 0) < 0
+    )
+  );
 
   // Calculations for Opening Balance Simulation
   const calcAssets = 
@@ -482,13 +538,137 @@ export const AccountingPage: React.FC = () => {
               </p>
             </div>
           </div>
-          <button
-            onClick={openOpeningModalWithSync}
-            className="px-4 py-2 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-extrabold text-xs shadow-xs flex items-center justify-center gap-1.5 transition cursor-pointer shrink-0"
-          >
-            <PlusCircle className="w-4 h-4" />
-            <span>Setup Saldo Awal Sekarang</span>
-          </button>
+          <div className="flex items-center gap-2 shrink-0 self-end md:self-auto flex-wrap">
+            <button
+              onClick={() => {
+                setGuideActiveTab('roadmap');
+                setIsGuideModalOpen(true);
+              }}
+              className="px-3.5 py-2 rounded-xl bg-white hover:bg-amber-100/50 border border-amber-300 text-amber-900 font-extrabold text-xs shadow-2xs flex items-center justify-center gap-1.5 transition cursor-pointer"
+            >
+              <HelpCircle className="w-4 h-4 text-amber-700" />
+              <span>Panduan 5 Langkah</span>
+            </button>
+            <button
+              onClick={openOpeningModalWithSync}
+              className="px-4 py-2 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-extrabold text-xs shadow-xs flex items-center justify-center gap-1.5 transition cursor-pointer"
+            >
+              <PlusCircle className="w-4 h-4" />
+              <span>Setup Saldo Awal Sekarang</span>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Asisten Pintar: Dokter Pembukuan (Accounting Health Inspector) */}
+      {syncStatus?.is_configured && (
+        <div className={`p-4 rounded-2xl border shadow-xs transition-all ${
+          hasDiscrepancy 
+            ? 'bg-linear-to-r from-amber-50/90 via-rose-50/40 to-amber-50/90 border-amber-300' 
+            : 'bg-linear-to-r from-emerald-50/90 via-teal-50/30 to-emerald-50/90 border-emerald-300'
+        }`}>
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+            <div className="flex items-start gap-3">
+              <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${
+                hasDiscrepancy ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'
+              }`}>
+                <Stethoscope className="w-6 h-6" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h3 className="font-extrabold text-sm text-slate-900">
+                    Dokter Pembukuan (Asisten Khusus Pemula)
+                  </h3>
+                  <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                    hasDiscrepancy 
+                      ? 'bg-amber-200 text-amber-900' 
+                      : 'bg-emerald-200 text-emerald-900'
+                  }`}>
+                    {hasDiscrepancy ? '⚠️ Perlu Penyelarasan' : '✅ Pembukuan 100% Sehat & Klop'}
+                  </span>
+                </div>
+                <p className="text-xs text-slate-600 mt-0.5">
+                  {hasDiscrepancy
+                    ? 'Sistem mendeteksi selisih antara nilai Saldo Awal dengan data fisik stok / hutang supplier. Anda tidak perlu repot menghitung manual, cukup klik tombol penyelarasan otomatis di bawah ini.'
+                    : 'Seluruh saldo buku besar klop sempurna dengan total modal fisik katalog, hutang supplier, kasbon pelanggan, dan neraca saldo seimbang.'}
+                </p>
+              </div>
+            </div>
+
+            {/* Action Buttons */}
+            <div className="flex items-center gap-2 shrink-0 self-end md:self-auto flex-wrap">
+              {hasDiscrepancy && (
+                <button
+                  onClick={handleAutoHarmonize}
+                  disabled={isHarmonizing}
+                  className="px-4 py-2.5 rounded-xl bg-linear-to-r from-amber-600 to-rose-600 hover:from-amber-700 hover:to-rose-700 text-white font-black text-xs shadow-md shadow-amber-500/20 flex items-center gap-2 transition cursor-pointer disabled:opacity-50"
+                  title="Otomatis samakan nilai buku besar dengan data fisik stok & supplier"
+                >
+                  <Sparkles className={`w-4 h-4 ${isHarmonizing ? 'animate-spin' : ''}`} />
+                  <span>{isHarmonizing ? 'Menyelaraskan...' : '⚡ Selaraskan Otomatis (1-Klik)'}</span>
+                </button>
+              )}
+
+              <button
+                onClick={() => {
+                  setGuideActiveTab('roadmap');
+                  setIsGuideModalOpen(true);
+                }}
+                className="px-3.5 py-2.5 rounded-xl bg-white hover:bg-slate-50 border border-slate-300 text-slate-700 font-extrabold text-xs shadow-2xs flex items-center gap-1.5 transition cursor-pointer"
+              >
+                <BookOpen className="w-4 h-4 text-blue-600" />
+                <span>Panduan 5 Langkah</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Rincian Diagnosa jika ada selisih */}
+          {hasDiscrepancy && (
+            <div className="mt-3 pt-3 border-t border-amber-200/80 grid grid-cols-1 md:grid-cols-3 gap-2 text-xs">
+              {!syncStatus.reconciliation?.inventory_matches && (
+                <div className="p-2.5 rounded-xl bg-white/80 border border-amber-200">
+                  <div className="font-bold text-amber-900 flex items-center gap-1">
+                    <Package className="w-3.5 h-3.5 text-amber-600" />
+                    <span>Selisih Stok Fisik vs Buku:</span>
+                  </div>
+                  <div className="text-[11px] text-slate-600 mt-1">
+                    Buku: <span className="font-mono font-bold">Rp {(syncStatus.balances?.inventory_value || 0).toLocaleString('id-ID')}</span>
+                    <br />
+                    Katalog: <span className="font-mono font-bold text-blue-700">Rp {(syncStatus.reconciliation?.inventory_catalog_hpp || 0).toLocaleString('id-ID')}</span>
+                  </div>
+                </div>
+              )}
+
+              {!syncStatus.reconciliation?.payables_matches && (
+                <div className="p-2.5 rounded-xl bg-white/80 border border-amber-200">
+                  <div className="font-bold text-amber-900 flex items-center gap-1">
+                    <Truck className="w-3.5 h-3.5 text-rose-600" />
+                    <span>Hutang Supplier Belum Klop:</span>
+                  </div>
+                  <div className="text-[11px] text-slate-600 mt-1">
+                    Buku: <span className="font-mono font-bold">Rp {(syncStatus.balances?.payables || 0).toLocaleString('id-ID')}</span>
+                    <br />
+                    Daftar Supplier: <span className="font-mono font-bold text-rose-700">Rp {(syncStatus.reconciliation?.supplier_total_debt || 0).toLocaleString('id-ID')}</span>
+                  </div>
+                </div>
+              )}
+
+              {(!syncStatus.reconciliation?.is_balanced || (syncStatus.balances?.ppob_deposit ?? 0) < 0) && (
+                <div className="p-2.5 rounded-xl bg-white/80 border border-amber-200">
+                  <div className="font-bold text-amber-900 flex items-center gap-1">
+                    <Scale className="w-3.5 h-3.5 text-indigo-600" />
+                    <span>Status Keseimbangan Neraca:</span>
+                  </div>
+                  <div className="text-[11px] text-slate-600 mt-1">
+                    {syncStatus.balances.ppob_deposit < 0 && (
+                      <div className="text-rose-600 font-bold mb-0.5">⚠️ Deposit PPOB minus</div>
+                    )}
+                    Ekuitas Modal Pemilik perlu disesuaikan dengan formula <code className="bg-slate-100 px-1 py-0.5 rounded text-[10px]">Aset - Hutang</code>.
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
 
@@ -1276,6 +1456,14 @@ export const AccountingPage: React.FC = () => {
             </div>
 
             <form onSubmit={handleSaveOpeningBalance} className="p-5 overflow-y-auto space-y-4 text-xs">
+              {/* Beginner Helper Callout */}
+              <div className="p-3 rounded-xl bg-blue-50/80 border border-blue-200 text-blue-900 flex items-start gap-2.5">
+                <Sparkles className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
+                <div className="text-[11px] leading-relaxed">
+                  <strong>Tips Cepat untuk Pemula:</strong> Anda tidak perlu menghitung manual persediaan stok atau hutang. Cukup klik tombol bertanda <strong>⚡ Tarik ...</strong> di samping label untuk otomatis menyamakan nilai dengan katalog dan mitra Anda.
+                </div>
+              </div>
+
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="block font-bold text-slate-700 mb-1">
@@ -1317,19 +1505,42 @@ export const AccountingPage: React.FC = () => {
                 </div>
 
                 <div>
-                  <div className="flex items-center justify-between mb-1">
+                  <div className="flex items-center justify-between mb-1 flex-wrap gap-1">
                     <label className="font-bold text-slate-700">
                       4. Piutang Kasbon Awal (1-1004) Rp
                     </label>
-                    {customersList.length > 0 && (
-                      <button
-                        type="button"
-                        onClick={() => setShowCustomerBreakdown(!showCustomerBreakdown)}
-                        className="text-[10px] text-indigo-600 font-bold hover:underline cursor-pointer"
-                      >
-                        {showCustomerBreakdown ? 'Tutup Rincian' : `📋 Rincikan per Pelanggan (${customersList.length})`}
-                      </button>
-                    )}
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      {customersList.reduce((acc, c) => acc + (c.current_debt || 0), 0) > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const cMap: Record<number, string> = {};
+                            let sum = 0;
+                            customersList.forEach(c => {
+                              if (c.current_debt > 0) {
+                                cMap[c.id] = String(c.current_debt);
+                                sum += c.current_debt;
+                              }
+                            });
+                            setCustomerDebtsMap(cMap);
+                            setOpeningForm(prev => ({ ...prev, receivables: String(sum) }));
+                          }}
+                          className="text-[10px] text-blue-600 font-bold hover:underline cursor-pointer"
+                          title="Tarik total kasbon pelanggan yang tercatat di sistem"
+                        >
+                          ⚡ Tarik Kasbon (Rp {customersList.reduce((acc, c) => acc + (c.current_debt || 0), 0).toLocaleString('id-ID')})
+                        </button>
+                      )}
+                      {customersList.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setShowCustomerBreakdown(!showCustomerBreakdown)}
+                          className="text-[10px] text-indigo-600 font-bold hover:underline cursor-pointer"
+                        >
+                          {showCustomerBreakdown ? 'Tutup Rincian' : `📋 Rincikan (${customersList.length})`}
+                        </button>
+                      )}
+                    </div>
                   </div>
                   <input
                     type="number"
@@ -1365,7 +1576,7 @@ export const AccountingPage: React.FC = () => {
                 </div>
 
                 <div>
-                  <div className="flex items-center justify-between mb-1">
+                  <div className="flex items-center justify-between mb-1 flex-wrap gap-1">
                     <label className="font-bold text-slate-700">
                       5. Persediaan Fisik Toko (1-1005) Rp
                     </label>
@@ -1390,19 +1601,42 @@ export const AccountingPage: React.FC = () => {
                 </div>
 
                 <div>
-                  <div className="flex items-center justify-between mb-1">
+                  <div className="flex items-center justify-between mb-1 flex-wrap gap-1">
                     <label className="font-bold text-slate-700">
                       6. Hutang Supplier Awal (2-1001) Rp
                     </label>
-                    {suppliersList.length > 0 && (
-                      <button
-                        type="button"
-                        onClick={() => setShowSupplierBreakdown(!showSupplierBreakdown)}
-                        className="text-[10px] text-indigo-600 font-bold hover:underline cursor-pointer"
-                      >
-                        {showSupplierBreakdown ? 'Tutup Rincian' : `📋 Rincikan per Supplier (${suppliersList.length})`}
-                      </button>
-                    )}
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      {suppliersList.reduce((acc, s) => acc + (s.current_debt || 0), 0) > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const sMap: Record<number, string> = {};
+                            let sum = 0;
+                            suppliersList.forEach(s => {
+                              if (s.current_debt > 0) {
+                                sMap[s.id] = String(s.current_debt);
+                                sum += s.current_debt;
+                              }
+                            });
+                            setSupplierDebtsMap(sMap);
+                            setOpeningForm(prev => ({ ...prev, payables: String(sum) }));
+                          }}
+                          className="text-[10px] text-rose-600 font-bold hover:underline cursor-pointer"
+                          title="Tarik total hutang supplier yang tercatat di sistem"
+                        >
+                          ⚡ Tarik Hutang (Rp {suppliersList.reduce((acc, s) => acc + (s.current_debt || 0), 0).toLocaleString('id-ID')})
+                        </button>
+                      )}
+                      {suppliersList.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setShowSupplierBreakdown(!showSupplierBreakdown)}
+                          className="text-[10px] text-indigo-600 font-bold hover:underline cursor-pointer"
+                        >
+                          {showSupplierBreakdown ? 'Tutup Rincian' : `📋 Rincikan (${suppliersList.length})`}
+                        </button>
+                      )}
+                    </div>
                   </div>
                   <input
                     type="number"
@@ -1628,19 +1862,24 @@ export const AccountingPage: React.FC = () => {
         </div>
       )}
 
-      {/* Modal: Panduan Alur Kerja Buku Besar bagi Pemula */}
+      {/* Modal: Panduan Alur Kerja & Roadmap Toko Baru bagi Pemula */}
       {isGuideModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4">
-          <div className="bg-white rounded-2xl shadow-2xl max-w-2xl w-full overflow-hidden flex flex-col max-h-[90vh]">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-3xl w-full overflow-hidden flex flex-col max-h-[92vh]">
+            {/* Modal Header */}
             <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between bg-slate-50">
-              <div>
-                <h3 className="font-extrabold text-sm text-slate-800 flex items-center gap-2">
-                  <HelpCircle className="w-4 h-4 text-blue-600" />
-                  <span>Panduan Alur Kerja Buku Besar (Pemakaian Pertama)</span>
-                </h3>
-                <p className="text-xs text-slate-500">
-                  Konsep akuntansi terpadu minimarket & PPOB tanpa cacat logika
-                </p>
+              <div className="flex items-center gap-2.5">
+                <div className="w-10 h-10 rounded-xl bg-blue-100 text-blue-700 flex items-center justify-center font-bold shrink-0">
+                  <HelpCircle className="w-6 h-6" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-sm md:text-base text-slate-800 flex items-center gap-2">
+                    <span>Panduan Langkah Awal Toko Baru & Buku Besar Terpadu</span>
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    Urutan terstruktur dari setup toko hingga siap jualan kasir dengan pembukuan 100% klop
+                  </p>
+                </div>
               </div>
               <button
                 onClick={() => setIsGuideModalOpen(false)}
@@ -1650,78 +1889,382 @@ export const AccountingPage: React.FC = () => {
               </button>
             </div>
 
-            <div className="p-5 overflow-y-auto space-y-4 text-xs">
-              {/* Step 1 */}
-              <div className="p-3.5 rounded-xl border border-blue-200 bg-blue-50/50 space-y-1">
-                <div className="font-extrabold text-blue-800 flex items-center gap-2">
-                  <span className="w-5 h-5 rounded-full bg-blue-600 text-white flex items-center justify-center text-[11px]">1</span>
-                  <span>Hari Pertama: Setup Saldo Awal Neraca (Opening Balance)</span>
-                </div>
-                <p className="text-slate-600 leading-relaxed pl-7">
-                  Saat pertama kali membuka toko dengan sistem POS, toko sudah memiliki aset (uang tunai di laci, rekening bank, saldo deposit PPOB ipay.my.id, dan stok barang fisik). Sistem otomatis menyeimbangkannya ke <strong>Modal Pemilik (Ekuitas)</strong>: <code className="bg-white px-1 py-0.5 rounded font-mono">Modal = Total Aset - Total Hutang</code>.
-                </p>
-              </div>
+            {/* Modal Navigation Tabs */}
+            <div className="flex border-b border-slate-200 bg-slate-100/70 px-5 pt-2 gap-2 text-xs font-bold">
+              <button
+                onClick={() => setGuideActiveTab('roadmap')}
+                className={`pb-2.5 px-3 border-b-2 transition cursor-pointer flex items-center gap-1.5 ${
+                  guideActiveTab === 'roadmap'
+                    ? 'border-blue-600 text-blue-700 font-extrabold'
+                    : 'border-transparent text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                <span>🗺️ 5 Langkah Memulai Toko</span>
+                {onboardingData && (
+                  <span className="bg-blue-100 text-blue-800 text-[10px] px-1.5 py-0.2 rounded-full font-mono">
+                    {onboardingData.completedCount}/{onboardingData.totalSteps}
+                  </span>
+                )}
+              </button>
 
-              {/* Step 2 */}
-              <div className="p-3.5 rounded-xl border border-slate-200 bg-slate-50 space-y-1">
-                <div className="font-extrabold text-slate-800 flex items-center gap-2">
-                  <span className="w-5 h-5 rounded-full bg-slate-700 text-white flex items-center justify-center text-[11px]">2</span>
-                  <span>Penjualan Barang Ritel Fisik (Minimarket)</span>
-                </div>
-                <p className="text-slate-600 leading-relaxed pl-7">
-                  Ketika kasir checkout barang fisik:
-                  <br />• <strong>Debit:</strong> Kas Laci Kasir (1-1001) bertambah sejumlah uang yang diterima.
-                  <br />• <strong>Kredit:</strong> Pendapatan Penjualan Ritel (4-1001) bertambah.
-                  <br />• <strong>Debit:</strong> HPP Barang Dagangan (5-1001) dicatat sesuai harga modal beli rata-rata.
-                  <br />• <strong>Kredit:</strong> Persediaan Barang (1-1005) berkurang nilainya.
-                </p>
-              </div>
+              <button
+                onClick={() => setGuideActiveTab('dictionary')}
+                className={`pb-2.5 px-3 border-b-2 transition cursor-pointer flex items-center gap-1.5 ${
+                  guideActiveTab === 'dictionary'
+                    ? 'border-blue-600 text-blue-700 font-extrabold'
+                    : 'border-transparent text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                <span>📚 Kamus Istilah Bahasa Awam</span>
+              </button>
 
-              {/* Step 3 */}
-              <div className="p-3.5 rounded-xl border border-slate-200 bg-slate-50 space-y-1">
-                <div className="font-extrabold text-slate-800 flex items-center gap-2">
-                  <span className="w-5 h-5 rounded-full bg-slate-700 text-white flex items-center justify-center text-[11px]">3</span>
-                  <span>Penjualan Produk Digital PPOB (ipay.my.id)</span>
-                </div>
-                <p className="text-slate-600 leading-relaxed pl-7">
-                  Ketika pelanggan beli pulsa/token listrik di kasir yang sama:
-                  <br />• <strong>Debit:</strong> Kas Laci Kasir (1-1001) bertambah (harga jual).
-                  <br />• <strong>Kredit:</strong> Pendapatan Penjualan PPOB (4-1002) bertambah.
-                  <br />• <strong>Debit:</strong> HPP PPOB (5-1002) bertambah sebesar harga modal server.
-                  <br />• <strong>Kredit:</strong> Deposit PPOB ipay.my.id (1-1003) berkurang sesuai saldo yang terpotong.
-                </p>
-              </div>
-
-              {/* Step 4 */}
-              <div className="p-3.5 rounded-xl border border-amber-200 bg-amber-50/50 space-y-1">
-                <div className="font-extrabold text-amber-800 flex items-center gap-2">
-                  <span className="w-5 h-5 rounded-full bg-amber-600 text-white flex items-center justify-center text-[11px]">4</span>
-                  <span>Transaksi Kasbon & Pelunasan Hutang</span>
-                </div>
-                <p className="text-slate-600 leading-relaxed pl-7">
-                  • <strong>Saat Ambil Kasbon:</strong> Sistem mencatat Debit Piutang Usaha (1-1004) dan memeriksa apakah melampaui plafon (credit limit).
-                  <br />• <strong>Saat Pelunasan:</strong> Pelanggan mencicil/melunasi kasbon di kasir &rarr; Sistem mencatat Debit Kas Laci (1-1001), Kredit Piutang (1-1004), otomatis menambah uang kas masuk ke sesi shift kasir, dan mencetak struk termal bukti pelunasan.
-                </p>
-              </div>
-
-              {/* Step 5 */}
-              <div className="p-3.5 rounded-xl border border-emerald-200 bg-emerald-50/50 space-y-1">
-                <div className="font-extrabold text-emerald-800 flex items-center gap-2">
-                  <span className="w-5 h-5 rounded-full bg-emerald-600 text-white flex items-center justify-center text-[11px]">5</span>
-                  <span>Laporan Laba Rugi (P&L) & Neraca Saldo Otomatis</span>
-                </div>
-                <p className="text-slate-600 leading-relaxed pl-7">
-                  Pemilik dapat melihat laba rugi gabungan maupun terpisah (berapa laba bersih dari ritel dan berapa laba dari PPOB) secara akurat tanpa perlu pembukuan manual lagi. Neraca saldo selalu seimbang (*balanced*).
-                </p>
-              </div>
+              <button
+                onClick={() => setGuideActiveTab('flow')}
+                className={`pb-2.5 px-3 border-b-2 transition cursor-pointer flex items-center gap-1.5 ${
+                  guideActiveTab === 'flow'
+                    ? 'border-blue-600 text-blue-700 font-extrabold'
+                    : 'border-transparent text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                <span>🔄 Alur Akuntansi Otomatis</span>
+              </button>
             </div>
 
-            <div className="p-4 border-t border-slate-200 bg-slate-50 flex justify-end">
+            {/* Modal Content */}
+            <div className="p-5 overflow-y-auto space-y-4 text-xs">
+              {guideActiveTab === 'roadmap' && (
+                <div className="space-y-3.5">
+                  {/* Golden Rule Tip */}
+                  <div className="p-3.5 rounded-xl bg-blue-50 border border-blue-200 text-blue-900 space-y-1 leading-relaxed">
+                    <div className="font-bold flex items-center gap-1.5 text-blue-950">
+                      <Sparkles className="w-4 h-4 text-blue-600 shrink-0" />
+                      <span>Rahasia Penting bagi Pemula: Mengapa Urutan Ini Sangat Membantu?</span>
+                    </div>
+                    <p className="text-[11.5px] text-blue-800">
+                      Jangan atur Saldo Awal terlebih dahulu jika katalog produk masih kosong! Input <strong>Katalog Produk (Stok & Harga Beli/HPP)</strong> dan <strong>Mitra Supplier/Pelanggan</strong> terlebih dahulu. Setelah itu, sistem akan otomatis menghitung nilai total stok gudang dan hutang Anda, sehingga saat mengatur Saldo Awal (Langkah 4), Anda cukup klik <strong>⚡ Tarik Otomatis</strong> tanpa perlu hitung kalkulator manual!
+                    </p>
+                  </div>
+
+                  {/* 5 Steps Roadmap Checklist */}
+                  <div className="space-y-2.5">
+                    {/* Step 1 */}
+                    <div className="p-3.5 rounded-xl border border-slate-200 bg-white hover:border-blue-300 transition shadow-2xs flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <div className="flex items-start gap-3">
+                        <span className="w-6 h-6 rounded-full bg-slate-800 text-white flex items-center justify-center font-bold text-xs shrink-0 mt-0.5">
+                          1
+                        </span>
+                        <div>
+                          <div className="font-extrabold text-slate-800 flex items-center gap-2 flex-wrap">
+                            <span>Atur Profil & Informasi Toko</span>
+                            <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${
+                              onboardingData?.steps?.find((s: any) => s.id === 'step_profile')?.isCompleted
+                                ? 'bg-emerald-100 text-emerald-800'
+                                : 'bg-slate-100 text-slate-600'
+                            }`}>
+                              {onboardingData?.steps?.find((s: any) => s.id === 'step_profile')?.isCompleted ? '✓ Selesai' : 'Perlu Diisi'}
+                            </span>
+                          </div>
+                          <p className="text-slate-600 text-[11.5px] mt-0.5">
+                            Nama toko, nomor telepon, dan alamat untuk dicetak di kertas struk nota kasir saat melayani pembeli.
+                          </p>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => {
+                          setIsGuideModalOpen(false);
+                          if (onNavigate) onNavigate('settings');
+                        }}
+                        className="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-[11px] shrink-0 self-end sm:self-auto cursor-pointer"
+                      >
+                        Buka Menu Pengaturan &rarr;
+                      </button>
+                    </div>
+
+                    {/* Step 2 */}
+                    <div className="p-3.5 rounded-xl border-2 border-indigo-200 bg-indigo-50/30 hover:border-indigo-400 transition shadow-2xs flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <div className="flex items-start gap-3">
+                        <span className="w-6 h-6 rounded-full bg-indigo-600 text-white flex items-center justify-center font-bold text-xs shrink-0 mt-0.5">
+                          2
+                        </span>
+                        <div>
+                          <div className="font-extrabold text-indigo-950 flex items-center gap-2 flex-wrap">
+                            <span>Input Katalog Produk & Stok Awal Fisik</span>
+                            <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${
+                              onboardingData?.steps?.find((s: any) => s.id === 'step_products')?.isCompleted
+                                ? 'bg-emerald-100 text-emerald-800'
+                                : 'bg-indigo-100 text-indigo-800'
+                            }`}>
+                              {onboardingData?.steps?.find((s: any) => s.id === 'step_products')?.badge || 'Langkah Kunci'}
+                            </span>
+                          </div>
+                          <p className="text-slate-600 text-[11.5px] mt-0.5">
+                            Daftarkan barang dagangan dengan jumlah stok dan harga modal beli (HPP). Ini adalah kunci agar nilai persediaan toko dihitung otomatis oleh sistem tanpa perlu hitung manual.
+                          </p>
+                          {onboardingData?.steps?.find((s: any) => s.id === 'step_products')?.extraInfo && (
+                            <div className="text-[11px] font-mono font-bold text-indigo-700 mt-1">
+                              {onboardingData.steps.find((s: any) => s.id === 'step_products').extraInfo}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => {
+                          setIsGuideModalOpen(false);
+                          if (onNavigate) onNavigate('inventory');
+                        }}
+                        className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-[11px] shrink-0 self-end sm:self-auto cursor-pointer shadow-xs"
+                      >
+                        Input Katalog Produk &rarr;
+                      </button>
+                    </div>
+
+                    {/* Step 3 */}
+                    <div className="p-3.5 rounded-xl border border-slate-200 bg-white hover:border-blue-300 transition shadow-2xs flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <div className="flex items-start gap-3">
+                        <span className="w-6 h-6 rounded-full bg-slate-800 text-white flex items-center justify-center font-bold text-xs shrink-0 mt-0.5">
+                          3
+                        </span>
+                        <div>
+                          <div className="font-extrabold text-slate-800 flex items-center gap-2 flex-wrap">
+                            <span>Mitra Supplier & Pelanggan Kasbon (Opsional)</span>
+                            <span className="text-[10px] px-2 py-0.5 rounded-full font-bold bg-slate-100 text-slate-700">
+                              {onboardingData?.steps?.find((s: any) => s.id === 'step_partners')?.badge || 'Opsional'}
+                            </span>
+                          </div>
+                          <p className="text-slate-600 text-[11.5px] mt-0.5">
+                            Catat mitra distributor untuk belanja restock dan pelanggan langganan yang memiliki catatan hutang/kasbon lama.
+                          </p>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => {
+                          setIsGuideModalOpen(false);
+                          if (onNavigate) onNavigate('suppliers');
+                        }}
+                        className="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-[11px] shrink-0 self-end sm:self-auto cursor-pointer"
+                      >
+                        Kelola Supplier & Kasbon &rarr;
+                      </button>
+                    </div>
+
+                    {/* Step 4 */}
+                    <div className="p-3.5 rounded-xl border-2 border-blue-200 bg-blue-50/30 hover:border-blue-400 transition shadow-2xs flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <div className="flex items-start gap-3">
+                        <span className="w-6 h-6 rounded-full bg-blue-600 text-white flex items-center justify-center font-bold text-xs shrink-0 mt-0.5">
+                          4
+                        </span>
+                        <div>
+                          <div className="font-extrabold text-blue-950 flex items-center gap-2 flex-wrap">
+                            <span>Setup Saldo Awal Neraca (Day 1 Setup)</span>
+                            <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${
+                              onboardingData?.steps?.find((s: any) => s.id === 'step_opening')?.isCompleted
+                                ? 'bg-emerald-100 text-emerald-800'
+                                : 'bg-blue-100 text-blue-800'
+                            }`}>
+                              {onboardingData?.steps?.find((s: any) => s.id === 'step_opening')?.badge || 'Perlu Diatur'}
+                            </span>
+                          </div>
+                          <p className="text-slate-600 text-[11.5px] mt-0.5">
+                            Inisialisasi uang kas di laci kasir dan rekening bank. Nilai stok fisik dan hutang supplier ditarik otomatis. Sistem menyeimbangkan Modal Pemilik secara otomatis (Aset = Hutang + Modal).
+                          </p>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => {
+                          setIsGuideModalOpen(false);
+                          openOpeningModalWithSync();
+                        }}
+                        className="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-bold text-[11px] shrink-0 self-end sm:self-auto cursor-pointer shadow-xs"
+                      >
+                        Setup Saldo Awal &rarr;
+                      </button>
+                    </div>
+
+                    {/* Step 5 */}
+                    <div className="p-3.5 rounded-xl border border-slate-200 bg-white hover:border-emerald-300 transition shadow-2xs flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <div className="flex items-start gap-3">
+                        <span className="w-6 h-6 rounded-full bg-emerald-600 text-white flex items-center justify-center font-bold text-xs shrink-0 mt-0.5">
+                          5
+                        </span>
+                        <div>
+                          <div className="font-extrabold text-slate-800 flex items-center gap-2 flex-wrap">
+                            <span>Buka Kasir POS & Mulai Jualan!</span>
+                            <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${
+                              onboardingData?.steps?.find((s: any) => s.id === 'step_shift')?.isCompleted
+                                ? 'bg-emerald-100 text-emerald-800'
+                                : 'bg-slate-100 text-slate-600'
+                            }`}>
+                              {onboardingData?.steps?.find((s: any) => s.id === 'step_shift')?.badge || 'Kasir Belum Buka'}
+                            </span>
+                          </div>
+                          <p className="text-slate-600 text-[11.5px] mt-0.5">
+                            Buka sesi shift kasir dengan uang modal pecahan di laci, dan Anda siap melayani transaksi pelanggan minimarket & PPOB.
+                          </p>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => {
+                          setIsGuideModalOpen(false);
+                          if (onNavigate) onNavigate('pos');
+                        }}
+                        className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[11px] shrink-0 self-end sm:self-auto cursor-pointer shadow-xs"
+                      >
+                        Buka Kasir POS &rarr;
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {guideActiveTab === 'dictionary' && (
+                <div className="space-y-3">
+                  <div className="text-slate-600 leading-relaxed text-[11.5px]">
+                    Berikut adalah penjelasan istilah-istilah akuntansi dalam bahasa sehari-hari yang mudah dipahami pemilik warung / toko:
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                    <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-1">
+                      <div className="font-bold text-blue-700 flex items-center gap-1.5">
+                        <Wallet className="w-4 h-4" />
+                        <span>Aset (Aktiva Toko)</span>
+                      </div>
+                      <p className="text-[11px] text-slate-600 leading-relaxed">
+                        Seluruh kekayaan toko yang bernilai rupiah, meliputi: uang tunai di laci kasir, saldo rekening bank, deposit PPOB ipay, persediaan barang di rak toko, dan piutang kasbon pelanggan.
+                      </p>
+                    </div>
+
+                    <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-1">
+                      <div className="font-bold text-rose-700 flex items-center gap-1.5">
+                        <Truck className="w-4 h-4" />
+                        <span>Hutang Usaha (Liabilitas)</span>
+                      </div>
+                      <p className="text-[11px] text-slate-600 leading-relaxed">
+                        Tagihan belanja barang dagangan atau faktur tempo ke distributor/supplier yang belum Anda lunasi.
+                      </p>
+                    </div>
+
+                    <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-1">
+                      <div className="font-bold text-emerald-700 flex items-center gap-1.5">
+                        <Scale className="w-4 h-4" />
+                        <span>Modal Pemilik (Ekuitas)</span>
+                      </div>
+                      <p className="text-[11px] text-slate-600 leading-relaxed">
+                        Kekayaan bersih milik Anda pribadi yang tertanam di toko. Rumusnya sangat sederhana: <strong>Modal = Total Aset - Total Hutang</strong>.
+                      </p>
+                    </div>
+
+                    <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-1">
+                      <div className="font-bold text-amber-700 flex items-center gap-1.5">
+                        <Package className="w-4 h-4" />
+                        <span>HPP (Harga Pokok Penjualan)</span>
+                      </div>
+                      <p className="text-[11px] text-slate-600 leading-relaxed">
+                        Harga modal beli asli barang saat Anda belanja ke supplier (bukan harga jual ke pembeli). Saat barang laku, HPP dicatat otomatis untuk menghitung keuntungan bersih Anda.
+                      </p>
+                    </div>
+
+                    <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-1">
+                      <div className="font-bold text-indigo-700 flex items-center gap-1.5">
+                        <BookOpen className="w-4 h-4" />
+                        <span>Buku Besar per Akun</span>
+                      </div>
+                      <p className="text-[11px] text-slate-600 leading-relaxed">
+                        Buku catatan terpisah untuk masing-masing pos keuangan (kantong kas laci, kantong bank, kantong PPOB, kantong persediaan) sehingga Anda bisa melihat mutasi keluar-masuk uang di setiap kantong secara transparan.
+                      </p>
+                    </div>
+
+                    <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-1">
+                      <div className="font-bold text-teal-700 flex items-center gap-1.5">
+                        <ShieldCheck className="w-4 h-4" />
+                        <span>Neraca Saldo Seimbang (Balanced)</span>
+                      </div>
+                      <p className="text-[11px] text-slate-600 leading-relaxed">
+                        Kondisi sehat di mana total sisi Debit sama persis dengan Kredit (Aset = Hutang + Modal). Ini menandakan tidak ada uang toko yang hilang secara gaib atau tidak tercatat.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {guideActiveTab === 'flow' && (
+                <div className="space-y-3">
+                  {/* Step 1 */}
+                  <div className="p-3.5 rounded-xl border border-blue-200 bg-blue-50/50 space-y-1">
+                    <div className="font-extrabold text-blue-800 flex items-center gap-2">
+                      <span className="w-5 h-5 rounded-full bg-blue-600 text-white flex items-center justify-center text-[11px]">1</span>
+                      <span>Hari Pertama: Setup Saldo Awal Neraca (Opening Balance)</span>
+                    </div>
+                    <p className="text-slate-600 leading-relaxed pl-7">
+                      Saat pertama kali membuka toko dengan sistem POS, toko sudah memiliki aset (uang tunai di laci, rekening bank, saldo deposit PPOB ipay.my.id, dan stok barang fisik). Sistem otomatis menyeimbangkannya ke <strong>Modal Pemilik (Ekuitas)</strong>: <code className="bg-white px-1 py-0.5 rounded font-mono">Modal = Total Aset - Total Hutang</code>.
+                    </p>
+                  </div>
+
+                  {/* Step 2 */}
+                  <div className="p-3.5 rounded-xl border border-slate-200 bg-slate-50 space-y-1">
+                    <div className="font-extrabold text-slate-800 flex items-center gap-2">
+                      <span className="w-5 h-5 rounded-full bg-slate-700 text-white flex items-center justify-center text-[11px]">2</span>
+                      <span>Penjualan Barang Ritel Fisik (Minimarket)</span>
+                    </div>
+                    <p className="text-slate-600 leading-relaxed pl-7">
+                      Ketika kasir checkout barang fisik:
+                      <br />• <strong>Debit:</strong> Kas Laci Kasir (1-1001) bertambah sejumlah uang yang diterima.
+                      <br />• <strong>Kredit:</strong> Pendapatan Penjualan Ritel (4-1001) bertambah.
+                      <br />• <strong>Debit:</strong> HPP Barang Dagangan (5-1001) dicatat sesuai harga modal beli rata-rata.
+                      <br />• <strong>Kredit:</strong> Persediaan Barang (1-1005) berkurang nilainya.
+                    </p>
+                  </div>
+
+                  {/* Step 3 */}
+                  <div className="p-3.5 rounded-xl border border-slate-200 bg-slate-50 space-y-1">
+                    <div className="font-extrabold text-slate-800 flex items-center gap-2">
+                      <span className="w-5 h-5 rounded-full bg-slate-700 text-white flex items-center justify-center text-[11px]">3</span>
+                      <span>Penjualan Produk Digital PPOB (ipay.my.id)</span>
+                    </div>
+                    <p className="text-slate-600 leading-relaxed pl-7">
+                      Ketika pelanggan beli pulsa/token listrik di kasir yang sama:
+                      <br />• <strong>Debit:</strong> Kas Laci Kasir (1-1001) bertambah (harga jual).
+                      <br />• <strong>Kredit:</strong> Pendapatan Penjualan PPOB (4-1002) bertambah.
+                      <br />• <strong>Debit:</strong> HPP PPOB (5-1002) bertambah sebesar harga modal server.
+                      <br />• <strong>Kredit:</strong> Deposit PPOB ipay.my.id (1-1003) berkurang sesuai saldo yang terpotong.
+                    </p>
+                  </div>
+
+                  {/* Step 4 */}
+                  <div className="p-3.5 rounded-xl border border-amber-200 bg-amber-50/50 space-y-1">
+                    <div className="font-extrabold text-amber-800 flex items-center gap-2">
+                      <span className="w-5 h-5 rounded-full bg-amber-600 text-white flex items-center justify-center text-[11px]">4</span>
+                      <span>Transaksi Kasbon & Pelunasan Hutang</span>
+                    </div>
+                    <p className="text-slate-600 leading-relaxed pl-7">
+                      • <strong>Saat Ambil Kasbon:</strong> Sistem mencatat Debit Piutang Usaha (1-1004) dan memeriksa apakah melampaui plafon (credit limit).
+                      <br />• <strong>Saat Pelunasan:</strong> Pelanggan mencicil/melunasi kasbon di kasir &rarr; Sistem mencatat Debit Kas Laci (1-1001), Kredit Piutang (1-1004), otomatis menambah uang kas masuk ke sesi shift kasir, dan mencetak struk termal bukti pelunasan.
+                    </p>
+                  </div>
+
+                  {/* Step 5 */}
+                  <div className="p-3.5 rounded-xl border border-emerald-200 bg-emerald-50/50 space-y-1">
+                    <div className="font-extrabold text-emerald-800 flex items-center gap-2">
+                      <span className="w-5 h-5 rounded-full bg-emerald-600 text-white flex items-center justify-center text-[11px]">5</span>
+                      <span>Laporan Laba Rugi (P&L) & Neraca Saldo Otomatis</span>
+                    </div>
+                    <p className="text-slate-600 leading-relaxed pl-7">
+                      Pemilik dapat melihat laba rugi gabungan maupun terpisah (berapa laba bersih dari ritel dan berapa laba dari PPOB) secara akurat tanpa perlu pembukuan manual lagi. Neraca saldo selalu seimbang (*balanced*).
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            <div className="p-4 border-t border-slate-200 bg-slate-50 flex items-center justify-between">
+              <span className="text-[11px] text-slate-500">
+                Sistem Buku Besar POS IPAY • Sesuai Standar Akuntansi Ritel & Digital
+              </span>
               <button
                 onClick={() => setIsGuideModalOpen(false)}
                 className="px-5 py-2 rounded-xl text-xs font-bold bg-blue-600 hover:bg-blue-700 text-white shadow-xs transition cursor-pointer"
               >
-                Saya Mengerti
+                Saya Mengerti & Tutup
               </button>
             </div>
           </div>

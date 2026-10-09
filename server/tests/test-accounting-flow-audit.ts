@@ -25,20 +25,17 @@ async function runAccountingAuditTests() {
   AccountingService.recordHybridSale({
     invoice_no: testInv,
     payment_method: 'CASH',
-    retail: {
-      revenue: 100000,
-      cogs: 50000,
-      discount: 15000,
-    },
-    ppob: {
-      revenue: 0,
-      cogs: 0,
-    },
+    total_retail: 100000,
+    total_retail_cost: 50000,
+    discount: 15000,
+    grand_total: 85000,
+    total_ppob: 0,
+    total_ppob_cost: 0,
     cashier_id: 1,
     shift_id: 1,
   });
 
-  const pnl = AccountingService.getProfitAndLoss(nowStr, nowStr);
+  const pnl = AccountingService.getProfitAndLoss();
   assert(pnl.retail.grossRevenue >= 100000, 'Gross Retail Revenue reflects total gross sales');
   assert(pnl.retail.discounts !== undefined && pnl.retail.discounts >= 15000, 'Sales discounts correctly accumulated from account 4-1004');
   assert(pnl.retail.revenue === pnl.retail.grossRevenue - (pnl.retail.discounts || 0), 'Net Retail Revenue strictly equals Gross - Discounts');
@@ -177,8 +174,32 @@ async function runAccountingAuditTests() {
   assert(statusAfterReSetup.balances.owner_equity === 116000000, 'Owner equity is exactly (117m assets - 1m debt) = 116,000,000');
   assert(statusAfterReSetup.reconciliation.is_balanced, 'Re-configured Day-1 Trial balance is 100% balanced');
 
+  // --- Test 7: Dokter Pembukuan & Auto-Harmonize Opening Balance ---
+  console.log('--- Test 7: Dokter Pembukuan & Auto-Harmonize Opening Balance ---');
+  // Intentionally record mismatched opening balance
+  AccountingService.recordOpeningBalance({
+    cash_drawer: 1000000,
+    bank_balance: 5000000,
+    ppob_deposit: 500000,
+    receivables: 9999999,
+    inventory_value: 8888888,
+    payables: 7777777,
+    notes: 'Testing Discrepancies Detection',
+  });
+
+  const statusBeforeHarmonize = AccountingService.getOpeningBalanceStatus();
+  assert(statusBeforeHarmonize.is_configured, 'Opening balance configured with test discrepancy');
+
+  // Now execute autoHarmonizeOpeningBalance
+  const harmonizedStatus = AccountingService.autoHarmonizeOpeningBalance();
+  assert(harmonizedStatus.is_configured, 'Harmonized status is configured');
+  assert(harmonizedStatus.reconciliation.inventory_matches, 'Inventory matches real catalog HPP 100%');
+  assert(harmonizedStatus.reconciliation.payables_matches, 'Payables matches supplier debt list 100%');
+  assert(harmonizedStatus.reconciliation.receivables_matches, 'Receivables matches customer debt list 100%');
+  assert(harmonizedStatus.reconciliation.is_balanced, 'Trial balance is 100% balanced post harmonization');
+
   console.log('\n================================================================');
-  console.log('🎉 ALL 6 ACCOUNTING AUDIT & RESET VERIFICATIONS PASSED 100%!');
+  console.log('🎉 ALL 7 ACCOUNTING AUDIT & HARMONIZE VERIFICATIONS PASSED 100%!');
   console.log('================================================================\n');
 }
 
