@@ -4,12 +4,17 @@ import { useShift } from '../context/ShiftContext';
 import { usePPOB } from '../context/PPOBContext';
 import { 
   Wallet, RefreshCw, AlertTriangle, Clock, UserCheck, 
-  Store, ChevronDown, LogOut 
+  Store, ChevronDown, LogOut, PanelLeftClose, PanelLeftOpen 
 } from 'lucide-react';
 import { SwitchUserModal } from './SwitchUserModal';
 import { User } from '../types';
 
-export const Header: React.FC = () => {
+interface HeaderProps {
+  isSidebarCollapsed?: boolean;
+  onToggleSidebar?: () => void;
+}
+
+export const Header: React.FC<HeaderProps> = ({ isSidebarCollapsed, onToggleSidebar }) => {
   const { currentUser, users, setAuthenticatedUser, logout, storeName, tenantId } = useAuth();
   const { activeShift } = useShift();
   const { balance, lowBalanceAlert, mode, loading, refreshBalance } = usePPOB();
@@ -41,7 +46,22 @@ export const Header: React.FC = () => {
     <>
       <header className="bg-white border-b border-slate-200 shadow-xs px-2.5 sm:px-4 py-1.5 sm:py-2 flex items-center justify-between z-20 gap-2">
         {/* Brand & Store Name */}
-        <div className="flex items-center gap-2 sm:gap-3 min-w-0 shrink">
+        <div className="flex items-center gap-1.5 sm:gap-2.5 min-w-0 shrink">
+          {onToggleSidebar && (
+            <button
+              onClick={onToggleSidebar}
+              type="button"
+              className="hidden md:flex p-1.5 rounded-xl hover:bg-slate-100 text-slate-500 hover:text-slate-800 transition cursor-pointer"
+              title={isSidebarCollapsed ? "Tampilkan Nama Menu Sidebar" : "Sembunyikan Teks Menu (Perlebar Layar)"}
+            >
+              {isSidebarCollapsed ? (
+                <PanelLeftOpen className="w-5 h-5 text-blue-600" />
+              ) : (
+                <PanelLeftClose className="w-5 h-5 text-slate-600" />
+              )}
+            </button>
+          )}
+
           <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-linear-to-br from-blue-600 to-indigo-700 flex items-center justify-center text-white shadow-xs font-bold text-base shrink-0">
             <Store className="w-4 h-4 sm:w-5 sm:h-5" />
           </div>

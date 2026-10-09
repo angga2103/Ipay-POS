@@ -22,6 +22,17 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 const MainLayout: React.FC = () => {
   const { currentUser } = useAuth();
   const [activeTab, setActiveTab] = useState<string>('pos');
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(() => {
+    return localStorage.getItem('pos_sidebar_collapsed') === 'true';
+  });
+
+  const toggleSidebar = () => {
+    setIsSidebarCollapsed(prev => {
+      const next = !prev;
+      localStorage.setItem('pos_sidebar_collapsed', String(next));
+      return next;
+    });
+  };
 
   // If user is not authenticated, show modern responsive login screen
   if (!currentUser) {
@@ -31,12 +42,20 @@ const MainLayout: React.FC = () => {
   return (
     <div className="flex flex-col h-screen w-screen overflow-hidden bg-slate-100 font-sans">
       {/* Global Top Bar Header */}
-      <Header />
+      <Header 
+        isSidebarCollapsed={isSidebarCollapsed} 
+        onToggleSidebar={toggleSidebar} 
+      />
 
       {/* Main Content Layout */}
       <div className="flex flex-1 overflow-hidden">
         {/* Navigation Sidebar (hidden on mobile, visible on desktop/tablet) */}
-        <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} />
+        <Sidebar 
+          activeTab={activeTab} 
+          setActiveTab={setActiveTab} 
+          isCollapsed={isSidebarCollapsed}
+          onToggleCollapse={toggleSidebar}
+        />
 
         {/* Active Page View */}
         <main className="flex-1 flex flex-col overflow-hidden relative">
