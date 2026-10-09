@@ -3,19 +3,33 @@ import {
   Package, Layers, Calendar, ClipboardCheck, Plus, 
   Search, AlertTriangle, ArrowUpDown, Check, RefreshCw, 
   Edit3, Trash2, Smartphone, DollarSign, X, Save, ScanBarcode, 
-  Tag, ArrowRight, Truck, Info, Percent, TrendingUp, Coins
+  Tag, ArrowRight, Truck, Info, Percent, TrendingUp, Coins, AlertCircle, Building2
 } from 'lucide-react';
-import { Product, ProductUnit, ProductTier, InventoryValuation } from '../types';
+import { Product, ProductUnit, ProductTier, InventoryValuation, Supplier } from '../types';
 
 export const InventoryPage: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'products' | 'batches' | 'opname'>('products');
   const [products, setProducts] = useState<Product[]>([]);
   const [categories, setCategories] = useState<Array<{ id: number; name: string; code: string }>>([]);
+  const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [expiringBatches, setExpiringBatches] = useState<any[]>([]);
   const [valuationData, setValuationData] = useState<InventoryValuation | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategoryFilter, setSelectedCategoryFilter] = useState<string>('ALL');
   const [loading, setLoading] = useState(false);
+
+  // Quick Add Supplier Modal State (for instant registration during GRN)
+  const [isQuickSupplierModalOpen, setIsQuickSupplierModalOpen] = useState(false);
+  const [quickSupplierForm, setQuickSupplierForm] = useState({
+    name: '',
+    phone: '',
+    contact_person: '',
+    address: '',
+    bank_name: '',
+    bank_account_number: '',
+    bank_account_name: '',
+  });
+  const [isSavingQuickSupplier, setIsSavingQuickSupplier] = useState(false);
 
   // Stock Opname Form
   const [opnameItems, setOpnameItems] = useState<Record<number, number>>({});
@@ -47,6 +61,7 @@ export const InventoryPage: React.FC = () => {
     receivedQty: '',
     unitCost: '',
     paymentMethod: 'CASH' as 'CASH' | 'HUTANG',
+    supplierId: '',
     batchNumber: '',
     expiryDate: '',
   });
@@ -103,9 +118,20 @@ export const InventoryPage: React.FC = () => {
     }
   };
 
+  const fetchSuppliers = async () => {
+    try {
+      const res = await fetch('/api/suppliers');
+      const data = await res.json();
+      setSuppliers(Array.isArray(data) ? data : []);
+    } catch (err) {
+      console.error('Failed to load suppliers:', err);
+    }
+  };
+
   useEffect(() => {
     fetchProducts();
     fetchCategories();
+    fetchSuppliers();
     fetchBatches();
     fetchValuation();
   }, []);
@@ -243,10 +269,51 @@ export const InventoryPage: React.FC = () => {
       receivedQty: '',
       unitCost: String(p.cost_price),
       paymentMethod: 'CASH',
+      supplierId: '',
       batchNumber: `BATCH-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}`,
       expiryDate: '',
     });
+    fetchSuppliers();
     setIsGRNModalOpen(true);
+  };
+
+  // Quick Add Supplier Save Handler
+  const handleSaveQuickSupplier = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!quickSupplierForm.name.trim()) {
+      alert('Nama supplier / distributor wajib diisi');
+      return;
+    }
+    setIsSavingQuickSupplier(true);
+    try {
+      const res = await fetch('/api/suppliers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(quickSupplierForm),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Gagal menambahkan supplier');
+      }
+      await fetchSuppliers();
+      if (data.supplier?.id) {
+        setGrnForm(prev => ({ ...prev, supplierId: String(data.supplier.id) }));
+      }
+      setIsQuickSupplierModalOpen(false);
+      setQuickSupplierForm({
+        name: '',
+        phone: '',
+        contact_person: '',
+        address: '',
+        bank_name: '',
+        bank_account_number: '',
+        bank_account_name: '',
+      });
+    } catch (err: any) {
+      alert('Error: ' + err.message);
+    } finally {
+      setIsSavingQuickSupplier(false);
+    }
   };
 
   // Execute Goods Receipt
@@ -261,6 +328,11 @@ export const InventoryPage: React.FC = () => {
       return;
     }
 
+    if (grnForm.paymentMethod === 'HUTANG' && !grnForm.supplierId) {
+      alert('Silakan pilih supplier untuk mencatat hutang usaha pengadaan barang!');
+      return;
+    }
+
     try {
       const res = await fetch('/api/inventory/goods-receipt', {
         method: 'POST',
@@ -270,6 +342,7 @@ export const InventoryPage: React.FC = () => {
           receivedQty: qty,
           unitCost: cost,
           paymentMethod: grnForm.paymentMethod,
+          supplierId: grnForm.supplierId ? parseInt(grnForm.supplierId, 10) : undefined,
           batchNumber: grnForm.batchNumber || undefined,
           expiryDate: grnForm.expiryDate || undefined,
         }),
@@ -277,11 +350,15 @@ export const InventoryPage: React.FC = () => {
 
       const data = await res.json();
       if (res.ok && data.success) {
-        alert(`Stok berhasil ditambah! HPP rata-rata baru: Rp ${data.newAverageCost.toLocaleString('id-ID')} / ${grnSelectedProduct.base_uom}`);
+        const debtMsg = grnForm.paymentMethod === 'HUTANG' && data.supplierName
+          ? `\n\n✅ Tagihan hutang usaha ke "${data.supplierName}" sebesar Rp ${data.totalPurchase.toLocaleString('id-ID')} otomatis tercatat di modul Manajemen Supplier & Hutang.`
+          : '';
+        alert(`Stok berhasil ditambah! HPP rata-rata baru: Rp ${data.newAverageCost.toLocaleString('id-ID')} / ${grnSelectedProduct.base_uom}${debtMsg}`);
         setIsGRNModalOpen(false);
         fetchProducts();
         fetchBatches();
         fetchValuation();
+        fetchSuppliers();
       } else {
         alert(data.error || 'Gagal menyimpan penerimaan barang');
       }
@@ -1248,6 +1325,46 @@ export const InventoryPage: React.FC = () => {
                 </div>
               )}
 
+              {/* Supplier Selection */}
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
+                    <Truck className="w-3.5 h-3.5 text-blue-600" />
+                    <span>Pilih Supplier / Distributor {grnForm.paymentMethod === 'HUTANG' && <span className="text-rose-500">*</span>}</span>
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => setIsQuickSupplierModalOpen(true)}
+                    className="text-[11px] font-bold text-blue-600 hover:text-blue-800 flex items-center gap-1 hover:underline cursor-pointer"
+                  >
+                    <Plus className="w-3 h-3" />
+                    <span>+ Tambah Supplier Baru</span>
+                  </button>
+                </div>
+                <select
+                  value={grnForm.supplierId}
+                  onChange={e => setGrnForm({ ...grnForm, supplierId: e.target.value })}
+                  className={`w-full px-3 py-2 bg-slate-50 border rounded-xl text-xs font-semibold focus:ring-2 focus:outline-none transition ${
+                    grnForm.paymentMethod === 'HUTANG' && !grnForm.supplierId
+                      ? 'border-amber-400 bg-amber-50/50 text-slate-800 focus:ring-amber-400'
+                      : 'border-slate-300 text-slate-800 focus:ring-blue-500'
+                  }`}
+                >
+                  <option value="">-- Pilih Supplier / Non-Supplier --</option>
+                  {suppliers.map(s => (
+                    <option key={s.id} value={s.id}>
+                      {s.name} {s.current_debt > 0 ? `(Hutang: Rp ${Number(s.current_debt).toLocaleString('id-ID')})` : ''}
+                    </option>
+                  ))}
+                </select>
+                {grnForm.paymentMethod === 'HUTANG' && !grnForm.supplierId && (
+                  <p className="text-[10px] text-amber-600 mt-1 font-medium flex items-center gap-1">
+                    <AlertCircle className="w-3 h-3 shrink-0" />
+                    <span>Wajib memilih supplier jika pembayaran menggunakan Hutang Supplier agar tercatat di buku hutang.</span>
+                  </p>
+                )}
+              </div>
+
               {/* Payment Method */}
               <div>
                 <label className="block text-xs font-bold text-slate-700 mb-1">Metode Pembayaran Pengadaan</label>
@@ -1257,8 +1374,8 @@ export const InventoryPage: React.FC = () => {
                     onClick={() => setGrnForm({ ...grnForm, paymentMethod: 'CASH' })}
                     className={`py-2 rounded-xl text-xs font-bold border transition ${
                       grnForm.paymentMethod === 'CASH'
-                        ? 'bg-blue-600 text-white border-blue-600'
-                        : 'bg-slate-50 text-slate-700 border-slate-200'
+                        ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
+                        : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
                     }`}
                   >
                     Kas Laci (Tunai)
@@ -1268,13 +1385,21 @@ export const InventoryPage: React.FC = () => {
                     onClick={() => setGrnForm({ ...grnForm, paymentMethod: 'HUTANG' })}
                     className={`py-2 rounded-xl text-xs font-bold border transition ${
                       grnForm.paymentMethod === 'HUTANG'
-                        ? 'bg-blue-600 text-white border-blue-600'
-                        : 'bg-slate-50 text-slate-700 border-slate-200'
+                        ? 'bg-amber-600 text-white border-amber-600 shadow-sm'
+                        : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
                     }`}
                   >
                     Hutang Supplier
                   </button>
                 </div>
+                {grnForm.paymentMethod === 'HUTANG' && grnForm.supplierId && (
+                  <div className="mt-2 p-2 bg-amber-50 border border-amber-200 rounded-xl text-[11px] text-amber-900 flex items-start gap-1.5">
+                    <AlertCircle className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-0.5" />
+                    <span>
+                      Hutang sebesar <strong>Rp {(parseFloat(grnForm.receivedQty || '0') * parseFloat(grnForm.unitCost || '0')).toLocaleString('id-ID')}</strong> akan otomatis dicatat ke akun supplier <strong>{suppliers.find(s => String(s.id) === grnForm.supplierId)?.name}</strong> dan jurnal Hutang Usaha (2-1001).
+                    </span>
+                  </div>
+                )}
               </div>
 
               {/* Batch & Expiry FEFO */}
@@ -1304,7 +1429,7 @@ export const InventoryPage: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => setIsGRNModalOpen(false)}
-                  className="flex-1 py-2.5 rounded-xl border border-slate-300 text-xs font-semibold"
+                  className="flex-1 py-2.5 rounded-xl border border-slate-300 text-xs font-semibold hover:bg-slate-50"
                 >
                   Batal
                 </button>
@@ -1314,6 +1439,125 @@ export const InventoryPage: React.FC = () => {
                 >
                   <Check className="w-4 h-4" />
                   <span>Simpan Stok Masuk</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* 3. MODAL TAMBAH SUPPLIER CEPAT (QUICK ADD SUPPLIER FROM GRN) */}
+      {isQuickSupplierModalOpen && (
+        <div className="fixed inset-0 z-[60] bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl w-full max-w-md shadow-2xl border border-slate-200 overflow-hidden animate-scale-up">
+            <div className="bg-blue-600 px-5 py-3.5 text-white flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Building2 className="w-5 h-5 text-white" />
+                <div>
+                  <h3 className="font-extrabold text-sm">Tambah Supplier Baru</h3>
+                  <p className="text-[11px] text-blue-100">Daftarkan mitra supplier langsung saat restock barang</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setIsQuickSupplierModalOpen(false)}
+                className="w-7 h-7 rounded-full bg-white/10 hover:bg-white/20 text-white flex items-center justify-center cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveQuickSupplier} className="p-5 space-y-3.5">
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">Nama Supplier / PT / Distributor *</label>
+                <input
+                  type="text"
+                  required
+                  value={quickSupplierForm.name}
+                  onChange={e => setQuickSupplierForm({ ...quickSupplierForm, name: e.target.value })}
+                  placeholder="Contoh: PT Sumber Pangan Makmur"
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-semibold focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-700 mb-1">No. WhatsApp / HP</label>
+                  <input
+                    type="text"
+                    value={quickSupplierForm.phone}
+                    onChange={e => setQuickSupplierForm({ ...quickSupplierForm, phone: e.target.value })}
+                    placeholder="08123456789"
+                    className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-300 rounded-xl text-xs focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-700 mb-1">Nama Sales / PIC</label>
+                  <input
+                    type="text"
+                    value={quickSupplierForm.contact_person}
+                    onChange={e => setQuickSupplierForm({ ...quickSupplierForm, contact_person: e.target.value })}
+                    placeholder="Contoh: Budi"
+                    className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-300 rounded-xl text-xs focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-bold text-slate-700 mb-1">Alamat Supplier</label>
+                <input
+                  type="text"
+                  value={quickSupplierForm.address}
+                  onChange={e => setQuickSupplierForm({ ...quickSupplierForm, address: e.target.value })}
+                  placeholder="Kota / Alamat gudang supplier"
+                  className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-300 rounded-xl text-xs focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-700 mb-1">Bank Supplier</label>
+                  <input
+                    type="text"
+                    value={quickSupplierForm.bank_name}
+                    onChange={e => setQuickSupplierForm({ ...quickSupplierForm, bank_name: e.target.value })}
+                    placeholder="BCA / Mandiri / BRI"
+                    className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-300 rounded-xl text-xs focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-700 mb-1">No. Rekening</label>
+                  <input
+                    type="text"
+                    value={quickSupplierForm.bank_account_number}
+                    onChange={e => setQuickSupplierForm({ ...quickSupplierForm, bank_account_number: e.target.value })}
+                    placeholder="Nomor rekening"
+                    className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-mono focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              <div className="pt-2 flex gap-3">
+                <button
+                  type="button"
+                  onClick={() => setIsQuickSupplierModalOpen(false)}
+                  disabled={isSavingQuickSupplier}
+                  className="flex-1 py-2.5 rounded-xl border border-slate-300 text-xs font-semibold hover:bg-slate-50 disabled:opacity-50"
+                >
+                  Batal
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSavingQuickSupplier}
+                  className="flex-1 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold flex items-center justify-center gap-1.5 shadow-md shadow-blue-500/20 disabled:opacity-50 cursor-pointer"
+                >
+                  {isSavingQuickSupplier ? (
+                    <span>Menyimpan...</span>
+                  ) : (
+                    <>
+                      <Check className="w-4 h-4" />
+                      <span>Simpan & Pilih Supplier</span>
+                    </>
+                  )}
                 </button>
               </div>
             </form>

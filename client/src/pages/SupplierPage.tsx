@@ -3,7 +3,7 @@ import {
   Truck, Plus, Search, DollarSign, CreditCard, 
   FileText, CheckCircle2, AlertTriangle, Printer, 
   X, Check, Edit2, Trash2, Building, Phone, User, 
-  ArrowRight, ShieldAlert, History, Wallet, ExternalLink
+  ArrowRight, ShieldAlert, History, Wallet, ExternalLink, Package
 } from 'lucide-react';
 import { Supplier, SupplierDebtPayment } from '../types';
 import { useShift } from '../context/ShiftContext';
@@ -48,6 +48,7 @@ export const SupplierPage: React.FC = () => {
   const [isHistoryModalOpen, setIsHistoryModalOpen] = useState(false);
   const [selectedSupplierDetail, setSelectedSupplierDetail] = useState<(Supplier & { payments?: SupplierDebtPayment[]; purchaseOrders?: any[] }) | null>(null);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyTab, setHistoryTab] = useState<'all' | 'po' | 'payments'>('all');
 
   const fetchSuppliers = async () => {
     setLoading(true);
@@ -213,6 +214,7 @@ export const SupplierPage: React.FC = () => {
   };
 
   const openHistoryModal = async (sup: Supplier) => {
+    setHistoryTab('all');
     setHistoryLoading(true);
     setIsHistoryModalOpen(true);
     try {
@@ -884,39 +886,135 @@ export const SupplierPage: React.FC = () => {
                     </div>
                   </div>
 
-                  {/* Payment History List */}
-                  <div>
-                    <h4 className="font-bold text-slate-800 mb-2 flex items-center gap-1.5">
-                      <FileText className="w-3.5 h-3.5 text-indigo-600" />
-                      <span>Riwayat Pembayaran Hutang ({selectedSupplierDetail.payments?.length || 0})</span>
-                    </h4>
-
-                    {(!selectedSupplierDetail.payments || selectedSupplierDetail.payments.length === 0) ? (
-                      <div className="p-4 text-center bg-slate-50 rounded-xl border border-slate-200 text-slate-400">
-                        Belum ada riwayat pembayaran hutang ke supplier ini
-                      </div>
-                    ) : (
-                      <div className="space-y-2">
-                        {selectedSupplierDetail.payments.map(p => (
-                          <div key={p.id} className="p-3 bg-white rounded-xl border border-slate-200 shadow-2xs flex items-center justify-between">
-                            <div>
-                              <div className="font-extrabold text-slate-800 font-mono text-xs">{p.payment_no}</div>
-                              <div className="text-[10px] text-slate-400">
-                                {new Date(p.created_at).toLocaleString('id-ID')} • {p.payment_method === 'CASH' ? 'Kas Laci (Tunai)' : 'Transfer Bank'}
-                              </div>
-                              {p.notes && <div className="text-[11px] text-slate-600 mt-0.5">{p.notes}</div>}
-                            </div>
-                            <div className="text-right">
-                              <div className="font-black text-emerald-600 font-mono text-xs">
-                                -Rp {p.amount.toLocaleString('id-ID')}
-                              </div>
-                              <div className="text-[10px] text-slate-400">Oleh: {p.user_name || 'Staff'}</div>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
+                  {/* Filter Tabs Mutasi */}
+                  <div className="flex border-b border-slate-200 gap-1.5 pb-2 overflow-x-auto">
+                    <button
+                      type="button"
+                      onClick={() => setHistoryTab('all')}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer whitespace-nowrap ${
+                        historyTab === 'all'
+                          ? 'bg-indigo-600 text-white shadow-xs'
+                          : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                      }`}
+                    >
+                      Semua Mutasi ({(selectedSupplierDetail.purchaseOrders?.length || 0) + (selectedSupplierDetail.payments?.length || 0)})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setHistoryTab('po')}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer flex items-center gap-1 whitespace-nowrap ${
+                        historyTab === 'po'
+                          ? 'bg-indigo-600 text-white shadow-xs'
+                          : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                      }`}
+                    >
+                      <Package className="w-3.5 h-3.5" />
+                      <span>Faktur Pembelian / PO ({selectedSupplierDetail.purchaseOrders?.length || 0})</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setHistoryTab('payments')}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer flex items-center gap-1 whitespace-nowrap ${
+                        historyTab === 'payments'
+                          ? 'bg-indigo-600 text-white shadow-xs'
+                          : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                      }`}
+                    >
+                      <FileText className="w-3.5 h-3.5" />
+                      <span>Pembayaran Hutang ({selectedSupplierDetail.payments?.length || 0})</span>
+                    </button>
                   </div>
+
+                  {/* Section 1: Purchase Orders / Goods Receipts */}
+                  {(historyTab === 'all' || historyTab === 'po') && (
+                    <div className="space-y-2">
+                      <h4 className="font-bold text-slate-800 flex items-center justify-between">
+                        <span className="flex items-center gap-1.5">
+                          <Package className="w-3.5 h-3.5 text-indigo-600" />
+                          <span>Faktur Pembelian & Penerimaan Barang ({selectedSupplierDetail.purchaseOrders?.length || 0})</span>
+                        </span>
+                        <span className="text-[10px] text-slate-400 font-normal">GRN / Restock</span>
+                      </h4>
+
+                      {(!selectedSupplierDetail.purchaseOrders || selectedSupplierDetail.purchaseOrders.length === 0) ? (
+                        <div className="p-3.5 text-center bg-slate-50 rounded-xl border border-slate-200 text-slate-400">
+                          Belum ada faktur pembelian / penerimaan barang untuk supplier ini
+                        </div>
+                      ) : (
+                        <div className="space-y-2">
+                          {selectedSupplierDetail.purchaseOrders.map((po: any) => (
+                            <div key={po.id} className="p-3 bg-white rounded-xl border border-slate-200 shadow-2xs flex flex-col gap-1.5">
+                              <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-2">
+                                  <span className="font-extrabold text-slate-800 font-mono text-xs">{po.po_no}</span>
+                                  <span className={`px-2 py-0.5 rounded-md text-[10px] font-extrabold border ${
+                                    po.payment_method === 'HUTANG'
+                                      ? 'bg-amber-50 text-amber-800 border-amber-200'
+                                      : 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                                  }`}>
+                                    {po.payment_method === 'HUTANG' ? 'Hutang Supplier' : 'Kas Laci (Tunai)'}
+                                  </span>
+                                </div>
+                                <div className={`font-black font-mono text-xs ${
+                                  po.payment_method === 'HUTANG' ? 'text-rose-600' : 'text-slate-700'
+                                }`}>
+                                  {po.payment_method === 'HUTANG' ? '+' : ''}Rp {Number(po.total_amount).toLocaleString('id-ID')}
+                                </div>
+                              </div>
+                              {po.items_summary && (
+                                <div className="text-[11px] text-slate-600 font-medium bg-slate-50 p-2 rounded-lg border border-slate-100">
+                                  📦 {po.items_summary}
+                                </div>
+                              )}
+                              <div className="flex items-center justify-between text-[10px] text-slate-400 pt-0.5">
+                                <span>{new Date(po.created_at || po.order_date).toLocaleString('id-ID')}</span>
+                                <span className="text-emerald-600 font-bold">● Barang Diterima</span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Section 2: Payment History List */}
+                  {(historyTab === 'all' || historyTab === 'payments') && (
+                    <div className="space-y-2">
+                      <h4 className="font-bold text-slate-800 flex items-center justify-between">
+                        <span className="flex items-center gap-1.5">
+                          <FileText className="w-3.5 h-3.5 text-indigo-600" />
+                          <span>Riwayat Pembayaran Hutang ({selectedSupplierDetail.payments?.length || 0})</span>
+                        </span>
+                        <span className="text-[10px] text-slate-400 font-normal">Pelunasan</span>
+                      </h4>
+
+                      {(!selectedSupplierDetail.payments || selectedSupplierDetail.payments.length === 0) ? (
+                        <div className="p-3.5 text-center bg-slate-50 rounded-xl border border-slate-200 text-slate-400">
+                          Belum ada riwayat pembayaran hutang ke supplier ini
+                        </div>
+                      ) : (
+                        <div className="space-y-2">
+                          {selectedSupplierDetail.payments.map(p => (
+                            <div key={p.id} className="p-3 bg-white rounded-xl border border-slate-200 shadow-2xs flex items-center justify-between">
+                              <div>
+                                <div className="font-extrabold text-slate-800 font-mono text-xs">{p.payment_no}</div>
+                                <div className="text-[10px] text-slate-400">
+                                  {new Date(p.created_at).toLocaleString('id-ID')} • {p.payment_method === 'CASH' ? 'Kas Laci (Tunai)' : 'Transfer Bank'}
+                                </div>
+                                {p.notes && <div className="text-[11px] text-slate-600 mt-0.5">{p.notes}</div>}
+                              </div>
+                              <div className="text-right">
+                                <div className="font-black text-emerald-600 font-mono text-xs">
+                                  -Rp {p.amount.toLocaleString('id-ID')}
+                                </div>
+                                <div className="text-[10px] text-slate-400">Oleh: {p.user_name || 'Staff'}</div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </>
               )}
             </div>

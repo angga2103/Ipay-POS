@@ -83,6 +83,8 @@ export function initTenantDatabase(tenantDb: Database.Database, tenantId: string
   try { tenantDb.exec("ALTER TABLE suppliers ADD COLUMN bank_account_name TEXT"); } catch {}
   try { tenantDb.exec("ALTER TABLE suppliers ADD COLUMN current_debt REAL NOT NULL DEFAULT 0"); } catch {}
   try { tenantDb.exec("ALTER TABLE suppliers ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1"); } catch {}
+  try { tenantDb.exec("ALTER TABLE purchase_orders ADD COLUMN payment_method TEXT DEFAULT 'CASH'"); } catch {}
+  try { tenantDb.exec("ALTER TABLE purchase_orders ADD COLUMN created_at DATETIME DEFAULT CURRENT_TIMESTAMP"); } catch {}
 
   tenantDb.exec(`
     CREATE TABLE IF NOT EXISTS supplier_debt_payments (

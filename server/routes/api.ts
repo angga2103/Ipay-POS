@@ -1473,9 +1473,23 @@ apiRouter.delete('/products/:id', (req: Request, res: Response) => {
 
 apiRouter.post('/inventory/goods-receipt', (req: Request, res: Response) => {
   try {
-    const { productId, receivedQty, unitCost, batchNumber, expiryDate, paymentMethod } = req.body;
+    const { productId, receivedQty, unitCost, batchNumber, expiryDate, paymentMethod, supplierId } = req.body;
     if (!productId || !receivedQty || !unitCost) {
       return res.status(400).json({ error: 'ID Produk, kuantitas, dan harga modal wajib diisi' });
+    }
+
+    const payMethod = paymentMethod === 'HUTANG' ? 'HUTANG' : 'CASH';
+
+    if (payMethod === 'HUTANG' && !supplierId) {
+      return res.status(400).json({ error: 'Supplier wajib dipilih untuk transaksi dengan metode Hutang Supplier' });
+    }
+
+    let supplier: any = null;
+    if (supplierId) {
+      supplier = db.prepare('SELECT id, name, current_debt FROM suppliers WHERE id = ?').get(parseInt(supplierId, 10)) as any;
+      if (!supplier && payMethod === 'HUTANG') {
+        return res.status(404).json({ error: 'Supplier yang dipilih tidak ditemukan' });
+      }
     }
 
     const result = InventoryService.processGoodsReceipt({
@@ -1488,12 +1502,51 @@ apiRouter.post('/inventory/goods-receipt', (req: Request, res: Response) => {
 
     const totalPurchase = parseFloat(receivedQty) * parseFloat(unitCost);
     const prod = db.prepare('SELECT name FROM products WHERE id = ?').get(productId) as any;
-    const credAccount = paymentMethod === 'HUTANG' ? '2-1001' : '1-1001';
+    const credAccount = payMethod === 'HUTANG' ? '2-1001' : '1-1001';
 
+    // Buat nomor PO / Faktur Pengadaan Barang
+    const todayStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    const poCount = (db.prepare("SELECT COUNT(*) as c FROM purchase_orders WHERE po_no LIKE ?").get(`PO/${todayStr}/%`) as any)?.c || 0;
+    const poNo = `PO/${todayStr}/${String(poCount + 1).padStart(4, '0')}`;
+
+    // Transaksi database: Simpan PO, Update Hutang Supplier (jika hutang), dan Jurnal
+    if (supplier) {
+      // 1. Simpan ke purchase_orders
+      const poRes = db.prepare(`
+        INSERT INTO purchase_orders (po_no, supplier_id, status, total_amount, order_date, received_date, notes, payment_method)
+        VALUES (?, ?, 'RECEIVED', ?, CURRENT_DATE, CURRENT_DATE, ?, ?)
+      `).run(
+        poNo,
+        supplier.id,
+        totalPurchase,
+        `Penerimaan barang: ${prod?.name || 'Produk'} (${receivedQty} unit @ Rp ${parseFloat(unitCost).toLocaleString('id-ID')})`,
+        payMethod
+      );
+
+      // 2. Simpan item ke purchase_order_items
+      db.prepare(`
+        INSERT INTO purchase_order_items (po_id, product_id, quantity, unit_cost, batch_number, expiry_date)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(
+        poRes.lastInsertRowid,
+        productId,
+        parseFloat(receivedQty),
+        parseFloat(unitCost),
+        batchNumber || null,
+        expiryDate || null
+      );
+
+      // 3. JIKA HUTANG: Tambahkan sisa hutang ke tabel suppliers
+      if (payMethod === 'HUTANG') {
+        db.prepare('UPDATE suppliers SET current_debt = current_debt + ? WHERE id = ?').run(totalPurchase, supplier.id);
+      }
+    }
+
+    // Catat jurnal akuntansi berpasangan ganda
     AccountingService.createJournalEntry({
       reference_type: 'PURCHASE',
-      reference_id: `GRN-${Date.now()}`,
-      description: `Penerimaan Barang: ${prod?.name || 'Produk'} (${receivedQty} unit @ Rp ${parseFloat(unitCost).toLocaleString('id-ID')})`,
+      reference_id: poNo,
+      description: `Penerimaan Barang [${payMethod}]: ${prod?.name || 'Produk'} (${receivedQty} unit @ Rp ${parseFloat(unitCost).toLocaleString('id-ID')})${supplier ? ` dari ${supplier.name}` : ''}`,
       lines: [
         {
           account_code: '1-1005',
@@ -1505,12 +1558,20 @@ apiRouter.post('/inventory/goods-receipt', (req: Request, res: Response) => {
           account_code: credAccount,
           debit: 0,
           credit: totalPurchase,
-          memo: paymentMethod === 'HUTANG' ? 'Hutang dagang pembelian barang' : 'Pengeluaran kas pembelian stok barang',
+          memo: payMethod === 'HUTANG' 
+            ? `Hutang usaha pengadaan barang${supplier ? ` ke ${supplier.name}` : ''}`
+            : 'Pengeluaran kas pembelian stok barang',
         },
       ],
     });
 
-    res.json({ success: true, ...result });
+    res.json({ 
+      success: true, 
+      poNo,
+      supplierName: supplier?.name,
+      totalPurchase,
+      ...result 
+    });
   } catch (err: any) {
     res.status(400).json({ error: err.message });
   }
@@ -2987,7 +3048,18 @@ apiRouter.get('/suppliers/:id', (req: Request, res: Response) => {
     `).all(id);
 
     const purchaseOrders = db.prepare(`
-      SELECT * FROM purchase_orders WHERE supplier_id = ? ORDER BY order_date DESC LIMIT 20
+      SELECT 
+        po.*,
+        (
+          SELECT GROUP_CONCAT(p.name || ' (' || CAST(poi.quantity AS TEXT) || ' unit)', ', ')
+          FROM purchase_order_items poi
+          JOIN products p ON poi.product_id = p.id
+          WHERE poi.po_id = po.id
+        ) as items_summary
+      FROM purchase_orders po 
+      WHERE po.supplier_id = ? 
+      ORDER BY po.id DESC 
+      LIMIT 50
     `).all(id);
 
     res.json({
