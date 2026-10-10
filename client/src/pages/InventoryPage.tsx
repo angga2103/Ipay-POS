@@ -3,10 +3,13 @@ import {
   Package, Layers, Calendar, ClipboardCheck, Plus, 
   Search, AlertTriangle, ArrowUpDown, Check, RefreshCw, 
   Edit3, Trash2, Smartphone, DollarSign, X, Save, ScanBarcode, 
-  Tag, ArrowRight, Truck, Info, Percent, TrendingUp, Coins, AlertCircle, Building2
+  Tag, ArrowRight, Truck, Info, Percent, TrendingUp, Coins, AlertCircle, Building2,
+  Camera
 } from 'lucide-react';
 import { Product, ProductUnit, ProductTier, InventoryValuation, Supplier } from '../types';
 import { ShelfTagPrintModal } from '../components/ShelfTagPrintModal';
+import { CameraBarcodeScannerModal } from '../components/CameraBarcodeScannerModal';
+import { playScanBeep } from '../utils/audio';
 
 export const InventoryPage: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'products' | 'batches' | 'opname'>('products');
@@ -19,6 +22,8 @@ export const InventoryPage: React.FC = () => {
   const [selectedCategoryFilter, setSelectedCategoryFilter] = useState<string>('ALL');
   const [loading, setLoading] = useState(false);
   const [isShelfTagModalOpen, setIsShelfTagModalOpen] = useState(false);
+  const [isBarcodeCameraOpen, setIsBarcodeCameraOpen] = useState(false);
+  const [activeUnitScanIdx, setActiveUnitScanIdx] = useState<number | null>(null);
 
   // Quick Add Supplier Modal State (for instant registration during GRN)
   const [isQuickSupplierModalOpen, setIsQuickSupplierModalOpen] = useState(false);
@@ -201,6 +206,21 @@ export const InventoryPage: React.FC = () => {
       })),
     });
     setIsProductModalOpen(true);
+  };
+
+  const handleBarcodeCameraSuccess = (scannedCode: string) => {
+    playScanBeep();
+    if (activeUnitScanIdx !== null) {
+      const updated = [...productForm.units];
+      if (updated[activeUnitScanIdx]) {
+        updated[activeUnitScanIdx].barcode = scannedCode;
+        setProductForm(prev => ({ ...prev, units: updated }));
+      }
+      setActiveUnitScanIdx(null);
+    } else {
+      setProductForm(prev => ({ ...prev, barcode: scannedCode }));
+    }
+    setIsBarcodeCameraOpen(false);
   };
 
   // Save product (Insert or Update)
@@ -975,8 +995,22 @@ export const InventoryPage: React.FC = () => {
                   </div>
 
                   <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1">Barcode Scanner *</label>
-                    <div className="relative">
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="text-xs font-bold text-slate-700">Barcode Scanner *</label>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setActiveUnitScanIdx(null);
+                          setIsBarcodeCameraOpen(true);
+                        }}
+                        className="text-[11px] font-bold text-blue-600 hover:text-blue-700 flex items-center gap-1 bg-blue-50 hover:bg-blue-100 px-2 py-0.5 rounded-lg border border-blue-200 transition cursor-pointer"
+                        title="Scan Barcode Kemasan via Kamera HP"
+                      >
+                        <Camera className="w-3.5 h-3.5 text-blue-600" />
+                        <span>Scan Kamera HP</span>
+                      </button>
+                    </div>
+                    <div className="relative flex items-center">
                       <ScanBarcode className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
                       <input
                         type="text"
@@ -984,8 +1018,20 @@ export const InventoryPage: React.FC = () => {
                         value={productForm.barcode}
                         onChange={e => setProductForm({ ...productForm, barcode: e.target.value })}
                         placeholder="Scan / ketik barcode barang"
-                        className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-mono font-bold focus:bg-white focus:outline-hidden"
+                        className="w-full pl-9 pr-14 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-mono font-bold focus:bg-white focus:outline-hidden"
                       />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setActiveUnitScanIdx(null);
+                          setIsBarcodeCameraOpen(true);
+                        }}
+                        className="absolute right-1.5 top-1/2 -translate-y-1/2 px-2 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded-lg flex items-center gap-1 text-[11px] font-bold transition cursor-pointer shadow-xs"
+                        title="Scan via Kamera HP"
+                      >
+                        <Camera className="w-3.5 h-3.5" />
+                        <span className="hidden sm:inline">Scan</span>
+                      </button>
                     </div>
                   </div>
 
@@ -1158,7 +1204,21 @@ export const InventoryPage: React.FC = () => {
                           />
                         </div>
                         <div className="col-span-2">
-                          <label className="text-[10px] text-slate-500 font-bold">Barcode</label>
+                          <div className="flex items-center justify-between">
+                            <label className="text-[10px] text-slate-500 font-bold">Barcode</label>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setActiveUnitScanIdx(idx);
+                                setIsBarcodeCameraOpen(true);
+                              }}
+                              className="text-[9px] text-blue-600 hover:text-blue-700 flex items-center gap-0.5 cursor-pointer font-bold"
+                              title="Scan Barcode Satuan"
+                            >
+                              <Camera className="w-2.5 h-2.5" />
+                              <span>Scan</span>
+                            </button>
+                          </div>
                           <input
                             type="text"
                             placeholder="Opsional"
@@ -1606,6 +1666,16 @@ export const InventoryPage: React.FC = () => {
         isOpen={isShelfTagModalOpen}
         onClose={() => setIsShelfTagModalOpen(false)}
         products={products}
+      />
+
+      {/* In-Browser Camera Barcode Scanner for Add/Edit Product */}
+      <CameraBarcodeScannerModal
+        isOpen={isBarcodeCameraOpen}
+        onClose={() => {
+          setIsBarcodeCameraOpen(false);
+          setActiveUnitScanIdx(null);
+        }}
+        onScanSuccess={handleBarcodeCameraSuccess}
       />
     </div>
   );

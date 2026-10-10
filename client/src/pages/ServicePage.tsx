@@ -1210,7 +1210,7 @@ export const ServicePage: React.FC = () => {
                       </div>
                       <div className="text-right">
                         <div className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Status</div>
-                        <div className="mt-0.5">{renderStatusBadge(trackingResult.service.status)}</div>
+                        <div className="mt-0.5">{getStatusBadge(trackingResult.service.status)}</div>
                       </div>
                     </div>
 
