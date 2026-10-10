@@ -1920,10 +1920,86 @@ apiRouter.post('/orders', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Keranjang belanja kosong' });
     }
 
-    // Verify shift is open
+    // 1. Verify shift is open
     const shift = db.prepare("SELECT * FROM shifts WHERE id = ? AND status = 'OPEN'").get(shift_id) as any;
     if (!shift) {
       return res.status(400).json({ error: 'Shift kasir tidak aktif. Silakan buka shift terlebih dahulu.' });
+    }
+
+    // 2. Pre-flight validation on all items before external API calls
+    let precalculatedRetailTotal = 0;
+    let precalculatedPPOBTotal = 0;
+
+    for (const item of items) {
+      if (item.item_type === 'RETAIL') {
+        const prod = db.prepare('SELECT id, name, cost_price, is_active, stock_quantity FROM products WHERE id = ?').get(item.product_id) as any;
+        if (!prod || prod.is_active === 0) {
+          return res.status(400).json({ error: `Produk fisik "${item.item_name || 'ID ' + item.product_id}" tidak ditemukan atau sedang nonaktif.` });
+        }
+        if (!item.quantity || item.quantity <= 0) {
+          return res.status(400).json({ error: `Kuantitas belanja untuk "${prod.name}" harus lebih besar dari 0.` });
+        }
+        precalculatedRetailTotal += (item.quantity * item.unit_price);
+      } else if (item.item_type === 'PPOB') {
+        const ppobProd = db.prepare('SELECT id, product_name, base_price, selling_price, is_active FROM ppob_products WHERE sku_code = ?').get(item.ppob_sku) as any;
+        if (!ppobProd || ppobProd.is_active === 0) {
+          return res.status(400).json({ error: `Produk digital PPOB (${item.ppob_sku}) tidak ditemukan atau sedang tidak aktif.` });
+        }
+        if (!item.ppob_target_no || !String(item.ppob_target_no).trim()) {
+          return res.status(400).json({ error: `Nomor tujuan pelanggan untuk ${ppobProd.product_name} wajib diisi.` });
+        }
+        precalculatedPPOBTotal += (item.unit_price || ppobProd.selling_price);
+      }
+    }
+
+    const discount = parseFloat(discount_amount) || 0;
+    const estimatedGrandTotal = Math.max(0, precalculatedRetailTotal + precalculatedPPOBTotal - discount);
+
+    // 3. Strict Backend Kasbon & Credit Limit Enforcement
+    if (payment_method === 'KASBON') {
+      if (!customer_id) {
+        return res.status(400).json({ error: 'Metode pembayaran KASBON mewajibkan memilih data pelanggan.' });
+      }
+      const customer = db.prepare('SELECT id, name, current_debt, credit_limit, is_active FROM customers WHERE id = ?').get(customer_id) as any;
+      if (!customer || customer.is_active === 0) {
+        return res.status(400).json({ error: 'Data pelanggan untuk kasbon tidak ditemukan atau tidak aktif.' });
+      }
+      if (customer.credit_limit > 0) {
+        const newDebt = (customer.current_debt || 0) + estimatedGrandTotal;
+        if (newDebt > customer.credit_limit) {
+          return res.status(400).json({
+            error: `Transaksi kasbon ditolak: Melebihi plafon limit kredit pelanggan "${customer.name}" (Limit: Rp ${customer.credit_limit.toLocaleString('id-ID')}, Hutang berjalan: Rp ${(customer.current_debt || 0).toLocaleString('id-ID')}, Tagihan: Rp ${estimatedGrandTotal.toLocaleString('id-ID')}).`
+          });
+        }
+      }
+    }
+
+    // 4. CASH & SPLIT Tendered Validation
+    if (payment_method === 'CASH') {
+      const tenderedNum = parseFloat(cash_tendered) || estimatedGrandTotal;
+      if (tenderedNum < estimatedGrandTotal) {
+        return res.status(400).json({
+          error: `Uang pembayaran tunai (Rp ${tenderedNum.toLocaleString('id-ID')}) kurang dari total tagihan (Rp ${estimatedGrandTotal.toLocaleString('id-ID')}).`
+        });
+      }
+    }
+
+    // 5. Anti-Double Click / Rapid Duplicate Submission Guard (within 2 seconds)
+    const recentOrder = db.prepare(`
+      SELECT id, invoice_no, grand_total, created_at 
+      FROM orders 
+      WHERE cashier_id = ? AND shift_id = ?
+      ORDER BY id DESC LIMIT 1
+    `).get(cashier_id, shift_id) as any;
+
+    if (recentOrder && recentOrder.created_at) {
+      const orderTime = new Date(recentOrder.created_at).getTime();
+      const diffMs = Date.now() - orderTime;
+      if (diffMs >= 0 && diffMs < 2000 && Math.abs(recentOrder.grand_total - estimatedGrandTotal) < 0.01) {
+        return res.status(429).json({
+          error: 'Permintaan transaksi terdeteksi duplikasi! Harap tunggu beberapa detik.'
+        });
+      }
     }
 
     const todayStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
@@ -1935,7 +2011,7 @@ apiRouter.post('/orders', async (req: Request, res: Response) => {
     let totalPPOB = 0;
     let totalPPOBCost = 0;
 
-    // Process PPOB digital purchases first (if any)
+    // Process PPOB digital purchases (safe: all pre-flight checks passed)
     const processedItems: any[] = [];
 
     for (const item of items) {
@@ -1987,7 +2063,6 @@ apiRouter.post('/orders', async (req: Request, res: Response) => {
       }
     }
 
-    const discount = parseFloat(discount_amount) || 0;
     const grandTotal = totalRetail + totalPPOB - discount;
     const tendered = parseFloat(cash_tendered) || grandTotal;
     const change = Math.max(0, tendered - grandTotal);
@@ -2169,6 +2244,14 @@ apiRouter.post('/orders/:id/void', (req: Request, res: Response) => {
     if (!order) return res.status(404).json({ error: 'Order tidak ditemukan' });
     if (order.status !== 'PAID') return res.status(400).json({ error: 'Hanya transaksi PAID yang dapat di-void' });
 
+    // Proteksi: Faktur dari shift yang sudah ditutup tidak boleh di-void (gunakan Retur Penjualan)
+    const orderShift = db.prepare('SELECT status, shift_number FROM shifts WHERE id = ?').get(order.shift_id) as any;
+    if (orderShift && orderShift.status === 'CLOSED') {
+      return res.status(400).json({
+        error: `Faktur ini berasal dari shift kasir yang sudah ditutup (${orderShift.shift_number}). Untuk pembatalan atau pengembalian dana transaksi shift sebelumnya, silakan gunakan modul Retur Penjualan.`
+      });
+    }
+
     const items = db.prepare('SELECT * FROM order_items WHERE order_id = ?').all(orderId) as any[];
 
     // Proteksi: Jangan izinkan void jika produk PPOB telah sukses terkirim ke pelanggan
@@ -2203,6 +2286,21 @@ apiRouter.post('/orders/:id/void', (req: Request, res: Response) => {
         lines.push({ account_code: '1-1004', debit: 0, credit: order.grand_total, memo: `Pembalik piutang kasbon void ${order.invoice_no}` });
         if (order.customer_id) {
           db.prepare('UPDATE customers SET current_debt = MAX(0, current_debt - ?) WHERE id = ?').run(order.grand_total, order.customer_id);
+        }
+      } else if (order.payment_method === 'SPLIT') {
+        let splitObj: any = null;
+        if (order.split_details) {
+          try {
+            splitObj = typeof order.split_details === 'string' ? JSON.parse(order.split_details) : order.split_details;
+          } catch (e) {}
+        }
+        const cashAmt = splitObj?.cash || 0;
+        const nonCashAmt = splitObj?.non_cash || (order.grand_total - cashAmt);
+        if (cashAmt > 0) {
+          lines.push({ account_code: '1-1001', debit: 0, credit: cashAmt, memo: `Refund porsi tunai void split ${order.invoice_no}` });
+        }
+        if (nonCashAmt > 0) {
+          lines.push({ account_code: '1-1002', debit: 0, credit: nonCashAmt, memo: `Refund porsi non-tunai void split ${order.invoice_no}` });
         }
       } else {
         lines.push({ account_code: '1-1002', debit: 0, credit: order.grand_total, memo: `Refund non-tunai void ${order.invoice_no}` });
@@ -2313,6 +2411,16 @@ apiRouter.post('/returns', (req: Request, res: Response) => {
 
     if (validatedItems.length === 0) {
       return res.status(400).json({ error: 'Tidak ada barang yang diretur' });
+    }
+
+    // Proteksi: Total akumulasi pengembalian dana tidak boleh melebihi grand_total faktur awal
+    const previousTotalRefunds = (db.prepare("SELECT COALESCE(SUM(total_refund), 0) as s FROM sales_returns WHERE order_id = ?").get(order_id) as any).s;
+    const maxAllowedRefund = Math.max(0, order.grand_total - previousTotalRefunds);
+    if (maxAllowedRefund <= 0) {
+      return res.status(400).json({ error: 'Faktur penjualan ini sudah diretur penuh (batas pengembalian dana telah habis).' });
+    }
+    if (totalRefund > maxAllowedRefund) {
+      totalRefund = maxAllowedRefund;
     }
 
     const todayStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');

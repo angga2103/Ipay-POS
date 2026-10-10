@@ -139,12 +139,33 @@ export class ShiftService {
       SELECT * FROM shift_cash_logs WHERE shift_id = ? ORDER BY id ASC
     `).all(shiftId);
 
+    // Ringkasan pembatalan (VOID) dalam shift ini
+    const voidSummary = db.prepare(`
+      SELECT 
+        COUNT(id) as void_count,
+        COALESCE(SUM(grand_total), 0) as void_total
+      FROM orders
+      WHERE shift_id = ? AND status = 'VOID'
+    `).get(shiftId) as any;
+
+    // Ringkasan retur penjualan dalam shift ini
+    const returnSummary = db.prepare(`
+      SELECT 
+        COUNT(id) as return_count,
+        COALESCE(SUM(total_refund), 0) as return_total,
+        COALESCE(SUM(CASE WHEN refund_method = 'CASH' THEN total_refund ELSE 0 END), 0) as cash_refund_total
+      FROM sales_returns
+      WHERE shift_id = ?
+    `).get(shiftId) as any;
+
     const expectedCashInDrawer = shift.opening_cash + ordersSummary.cash_sales + shift.total_cash_in - shift.total_cash_out;
 
     return {
       reportType: 'X-REPORT',
       shift,
       ordersSummary,
+      voidSummary,
+      returnSummary,
       cashLogs,
       expectedCashInDrawer,
       generatedAt: new Date().toISOString(),
