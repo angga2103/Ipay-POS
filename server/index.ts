@@ -87,4 +87,12 @@ if (process.env.NODE_ENV !== 'test') {
   });
 }
 
+// Global Process Error Handlers for High Availability Production
+process.on('uncaughtException', (err) => {
+  console.error('⚠️ [PRODUCTION GUARD] Uncaught Exception:', err);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('⚠️ [PRODUCTION GUARD] Unhandled Rejection:', reason);
+});
+
 export default app;
