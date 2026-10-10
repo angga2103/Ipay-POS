@@ -3,7 +3,7 @@ import {
   Barcode, Search, Zap, PauseCircle, PlayCircle, DollarSign, 
   Trash2, Plus, Minus, CreditCard, ShoppingBag, AlertCircle, 
   RefreshCw, CheckCircle2, ChevronDown, Tag, Smartphone, Grid, 
-  List, X, ShieldAlert, Sparkles, SlidersHorizontal
+  List, X, ShieldAlert, Sparkles, SlidersHorizontal, Camera
 } from 'lucide-react';
 import { useCart } from '../context/CartContext';
 import { useShift } from '../context/ShiftContext';
@@ -15,6 +15,8 @@ import { ProductSearchModal } from '../components/ProductSearchModal';
 import { ReceiptModal } from '../components/ReceiptModal';
 import { IMEIPromptModal } from '../components/IMEIPromptModal';
 import { DiscountModal } from '../components/DiscountModal';
+import { CameraBarcodeScannerModal } from '../components/CameraBarcodeScannerModal';
+import { playScanBeep, playErrorBoop } from '../utils/audio';
 import { Product } from '../types';
 
 export const CashierPOS: React.FC = () => {
@@ -45,6 +47,7 @@ export const CashierPOS: React.FC = () => {
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [isReceiptOpen, setIsReceiptOpen] = useState(false);
   const [isDiscountOpen, setIsDiscountOpen] = useState(false);
+  const [isCameraOpen, setIsCameraOpen] = useState(false);
   const [lastReceiptText, setLastReceiptText] = useState('');
   const [lastOrder, setLastOrder] = useState<any>(null);
   const [lastOrderItems, setLastOrderItems] = useState<any[]>([]);
@@ -125,6 +128,7 @@ export const CashierPOS: React.FC = () => {
 
   // Central handler to add product (with IMEI interception if required)
   const handleProductSelect = (prod: Product, unitName?: string) => {
+    playScanBeep();
     if (prod.requires_imei === 1) {
       setPendingIMEIProduct({ product: prod, unitName });
       setIsIMEIOpen(true);
@@ -137,6 +141,7 @@ export const CashierPOS: React.FC = () => {
 
   const handleIMEISubmit = (imeiSn: string) => {
     if (pendingIMEIProduct) {
+      playScanBeep();
       addItem(pendingIMEIProduct.product, pendingIMEIProduct.unitName, imeiSn);
       setScanMessage({ text: `+ ${pendingIMEIProduct.product.name} (IMEI terdaftar)`, type: 'success' });
       setTimeout(() => setScanMessage(null), 2500);
@@ -158,11 +163,32 @@ export const CashierPOS: React.FC = () => {
         setBarcodeInput('');
         handleProductSelect(prod, (prod as any).unit_name || prod.base_uom);
       } else {
+        playErrorBoop();
         setScanMessage({ text: `Barcode '${query}' tidak ditemukan!`, type: 'error' });
         setTimeout(() => setScanMessage(null), 3000);
       }
     } catch {
+      playErrorBoop();
       setScanMessage({ text: 'Gagal mencari produk', type: 'error' });
+    }
+  };
+
+  // Handle Barcode Scan from Camera Modal
+  const handleCameraScan = async (scannedBarcode: string) => {
+    try {
+      const res = await fetch(`/api/products/lookup?q=${encodeURIComponent(scannedBarcode)}`);
+      if (res.ok) {
+        const prod: Product = await res.json();
+        handleProductSelect(prod, (prod as any).unit_name || prod.base_uom);
+        setIsCameraOpen(false);
+      } else {
+        playErrorBoop();
+        setScanMessage({ text: `Barcode kamera '${scannedBarcode}' tidak ditemukan!`, type: 'error' });
+        setTimeout(() => setScanMessage(null), 3500);
+      }
+    } catch {
+      playErrorBoop();
+      setScanMessage({ text: 'Gagal memproses scan kamera', type: 'error' });
     }
   };
 
@@ -183,8 +209,8 @@ export const CashierPOS: React.FC = () => {
     <div className="flex-1 flex flex-col h-[calc(100vh-57px)] overflow-hidden bg-slate-100 pb-16 md:pb-0">
       {/* Top Action & Hotkey Toolbar */}
       <div className="bg-white border-b border-slate-200 px-3 md:px-4 py-2 flex flex-wrap items-center justify-between gap-2 shadow-xs z-10">
-        {/* Left: Barcode Scanner Input Form (F1) */}
-        <form onSubmit={handleBarcodeSubmit} className="flex items-center gap-2 flex-1 max-w-xs md:max-w-md">
+        {/* Left: Barcode Scanner Input Form (F1) & Camera Scanner Button */}
+        <form onSubmit={handleBarcodeSubmit} className="flex items-center gap-1.5 sm:gap-2 flex-1 max-w-xs md:max-w-md">
           <div className="relative flex-1">
             <Barcode className="w-5 h-5 text-slate-400 absolute left-3 top-2.5" />
             <input
@@ -202,6 +228,17 @@ export const CashierPOS: React.FC = () => {
               Cari
             </button>
           </div>
+
+          {/* Camera Scanner Button for HP / Laptop / Tablet */}
+          <button
+            type="button"
+            onClick={() => setIsCameraOpen(true)}
+            className="px-2.5 py-2 rounded-xl bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 transition cursor-pointer flex items-center justify-center gap-1 shrink-0 shadow-xs"
+            title="Scan Barcode via Kamera HP/Laptop (Tanpa Scanner Fisik)"
+          >
+            <Camera className="w-4 h-4 text-blue-600" />
+            <span className="hidden sm:inline text-xs font-bold">Kamera</span>
+          </button>
 
           {/* Quick Notification pill */}
           {scanMessage && (
@@ -610,6 +647,13 @@ export const CashierPOS: React.FC = () => {
           onSubmit={handleIMEISubmit}
         />
       )}
+
+      {/* In-Browser Camera Barcode Scanner Modal */}
+      <CameraBarcodeScannerModal
+        isOpen={isCameraOpen}
+        onClose={() => setIsCameraOpen(false)}
+        onScanSuccess={handleCameraScan}
+      />
     </div>
   );
 };

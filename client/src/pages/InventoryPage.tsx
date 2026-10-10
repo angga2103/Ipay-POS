@@ -6,6 +6,7 @@ import {
   Tag, ArrowRight, Truck, Info, Percent, TrendingUp, Coins, AlertCircle, Building2
 } from 'lucide-react';
 import { Product, ProductUnit, ProductTier, InventoryValuation, Supplier } from '../types';
+import { ShelfTagPrintModal } from '../components/ShelfTagPrintModal';
 
 export const InventoryPage: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'products' | 'batches' | 'opname'>('products');
@@ -17,6 +18,7 @@ export const InventoryPage: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategoryFilter, setSelectedCategoryFilter] = useState<string>('ALL');
   const [loading, setLoading] = useState(false);
+  const [isShelfTagModalOpen, setIsShelfTagModalOpen] = useState(false);
 
   // Quick Add Supplier Modal State (for instant registration during GRN)
   const [isQuickSupplierModalOpen, setIsQuickSupplierModalOpen] = useState(false);
@@ -617,6 +619,16 @@ export const InventoryPage: React.FC = () => {
                 </button>
 
                 <button
+                  type="button"
+                  onClick={() => setIsShelfTagModalOpen(true)}
+                  className="py-2 px-3.5 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-bold text-xs flex items-center gap-1.5 border border-indigo-200 transition cursor-pointer"
+                  title="Cetak Label Harga Rak Minimarket & Sticker Barcode Barang"
+                >
+                  <Tag className="w-4 h-4 text-indigo-600" />
+                  <span>Cetak Label Rak & Barcode</span>
+                </button>
+
+                <button
                   onClick={handleOpenAddModal}
                   className="py-2 px-3.5 rounded-xl bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white font-bold text-xs flex items-center gap-1.5 shadow-md shadow-blue-500/20 transition cursor-pointer"
                 >
@@ -649,10 +661,32 @@ export const InventoryPage: React.FC = () => {
                       </td>
                     </tr>
                   ) : (
-                    filteredProducts.map(p => (
+                    filteredProducts.map(p => {
+                      const expBatch = expiringBatches.find(b => b.product_id === p.id);
+                      let expBadge = null;
+                      if (expBatch) {
+                        const expiryDate = new Date(expBatch.expiry_date);
+                        const today = new Date();
+                        const diffDays = Math.ceil((expiryDate.getTime() - today.getTime()) / (1000 * 3600 * 24));
+                        if (diffDays <= 7) {
+                          expBadge = (
+                            <span className="px-1.5 py-0.2 rounded bg-rose-600 text-white font-extrabold text-[9px] uppercase animate-pulse" title={`Batch ${expBatch.batch_number} kedaluwarsa dalam ${diffDays} hari!`}>
+                              H-{diffDays} EXP
+                            </span>
+                          );
+                        } else if (diffDays <= 30) {
+                          expBadge = (
+                            <span className="px-1.5 py-0.2 rounded bg-amber-100 text-amber-900 border border-amber-300 font-extrabold text-[9px] uppercase" title={`Batch ${expBatch.batch_number} kedaluwarsa dalam ${diffDays} hari`}>
+                              H-{diffDays} EXP
+                            </span>
+                          );
+                        }
+                      }
+
+                      return (
                       <tr key={p.id} className="hover:bg-slate-50/80 transition">
                         <td className="py-3 px-3">
-                          <div className="flex items-center gap-1.5">
+                          <div className="flex items-center gap-1.5 flex-wrap">
                             <span className="font-bold text-slate-800 text-[12.5px]">{p.name}</span>
                             {p.requires_imei === 1 && (
                               <span className="px-1.5 py-0.2 rounded bg-amber-100 text-amber-900 font-extrabold text-[9px] uppercase flex items-center gap-0.5">
@@ -660,6 +694,7 @@ export const InventoryPage: React.FC = () => {
                                 IMEI
                               </span>
                             )}
+                            {expBadge}
                           </div>
                           <div className="text-[10.5px] text-slate-400 font-mono mt-0.5">
                             SKU: {p.sku} | Barcode: {p.barcode}
@@ -747,7 +782,8 @@ export const InventoryPage: React.FC = () => {
                           </div>
                         </td>
                       </tr>
-                    ))
+                    );
+                  })
                   )}
                 </tbody>
               </table>
@@ -1564,6 +1600,13 @@ export const InventoryPage: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* Shelf Tag & Barcode Sticker Print Modal */}
+      <ShelfTagPrintModal
+        isOpen={isShelfTagModalOpen}
+        onClose={() => setIsShelfTagModalOpen(false)}
+        products={products}
+      />
     </div>
   );
 };

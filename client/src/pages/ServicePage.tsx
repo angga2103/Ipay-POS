@@ -3,7 +3,7 @@ import {
   Wrench, Plus, Search, Filter, Phone, Smartphone, 
   CheckCircle, Clock, AlertTriangle, Printer, DollarSign, 
   Calendar, Check, X, ShieldAlert, ArrowRight, Eye, ShieldCheck,
-  MessageSquare, Send, ExternalLink, Copy
+  MessageSquare, Send, ExternalLink, Copy, QrCode, Sparkles
 } from 'lucide-react';
 import { ServiceOrder, ServiceStatus } from '../types';
 
@@ -12,6 +12,13 @@ export const ServicePage: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [activeStatusTab, setActiveStatusTab] = useState<string>('ALL');
   const [searchQuery, setSearchQuery] = useState('');
+
+  // Public Tracking & Warranty Claim Inspector Modal State
+  const [showTrackingModal, setShowTrackingModal] = useState(false);
+  const [trackingQuery, setTrackingQuery] = useState('');
+  const [trackingLoading, setTrackingLoading] = useState(false);
+  const [trackingResult, setTrackingResult] = useState<{ service: any; warranty: any } | null>(null);
+  const [trackingError, setTrackingError] = useState('');
 
   // Intake Modal State
   const [showIntakeModal, setShowIntakeModal] = useState(false);
@@ -66,6 +73,37 @@ export const ServicePage: React.FC = () => {
     message: '',
     copied: false,
   });
+
+  const handleSearchTracking = async (queryToSearch?: string) => {
+    const q = (queryToSearch !== undefined ? queryToSearch : trackingQuery).trim();
+    if (!q) {
+      setTrackingError('Masukkan nomor tiket (SRV-...), IMEI, atau nomor telepon');
+      return;
+    }
+    setTrackingLoading(true);
+    setTrackingError('');
+    try {
+      const res = await fetch(`/api/public/service-tracking/${encodeURIComponent(q)}`);
+      const data = await res.json();
+      if (res.ok && data.service) {
+        setTrackingResult(data);
+      } else {
+        setTrackingResult(null);
+        setTrackingError(data.error || 'Data servis tidak ditemukan');
+      }
+    } catch (err: any) {
+      setTrackingResult(null);
+      setTrackingError(err.message || 'Gagal mencari data tracking servis');
+    } finally {
+      setTrackingLoading(false);
+    }
+  };
+
+  const handleOpenTrackingForService = (srv: ServiceOrder) => {
+    setTrackingQuery(srv.service_no);
+    setShowTrackingModal(true);
+    handleSearchTracking(srv.service_no);
+  };
 
   const generateServiceReadyMessage = (service: ServiceOrder, finalCostOverride?: number) => {
     const cost = finalCostOverride !== undefined ? finalCostOverride : (service.final_cost || service.estimated_cost || 0);
@@ -330,13 +368,25 @@ export const ServicePage: React.FC = () => {
           </p>
         </div>
 
-        <button
-          onClick={() => setShowIntakeModal(true)}
-          className="py-2.5 px-4 rounded-xl bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white font-bold text-xs md:text-sm flex items-center justify-center gap-2 shadow-md shadow-blue-500/20 cursor-pointer min-h-[44px] transition"
-        >
-          <Plus className="w-4 h-4" />
-          <span>Terima Servis Baru</span>
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setShowTrackingModal(true)}
+            className="py-2.5 px-3.5 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-bold text-xs md:text-sm flex items-center justify-center gap-2 border border-indigo-200 cursor-pointer min-h-[44px] transition"
+            title="Cek Status Servis Real-Time & Validitas Klaim Garansi Toko"
+          >
+            <ShieldCheck className="w-4 h-4 text-indigo-600" />
+            <span>Cek Garansi & Lacak Servis</span>
+          </button>
+
+          <button
+            onClick={() => setShowIntakeModal(true)}
+            className="py-2.5 px-4 rounded-xl bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white font-bold text-xs md:text-sm flex items-center justify-center gap-2 shadow-md shadow-blue-500/20 cursor-pointer min-h-[44px] transition"
+          >
+            <Plus className="w-4 h-4" />
+            <span>Terima Servis Baru</span>
+          </button>
+        </div>
       </div>
 
       {/* Filter Tabs & Search Bar */}
@@ -488,6 +538,15 @@ export const ServicePage: React.FC = () => {
                         className="p-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-600 transition cursor-pointer"
                       >
                         <Printer className="w-4 h-4" />
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => handleOpenTrackingForService(srv)}
+                        title="Lacak Detail & Cek Garansi Toko"
+                        className="p-2 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-700 transition cursor-pointer"
+                      >
+                        <ShieldCheck className="w-4 h-4 text-indigo-600" />
                       </button>
 
                       {srv.status !== 'PICKED_UP' && srv.status !== 'CANCELLED' && (
@@ -1012,6 +1071,223 @@ export const ServicePage: React.FC = () => {
                   <ExternalLink className="w-3.5 h-3.5" />
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Customer Tracking & Warranty Claim Inspector Modal */}
+      {showTrackingModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-3 md:p-4">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-xl w-full overflow-hidden flex flex-col max-h-[92vh] animate-scale-up border border-slate-200">
+            {/* Modal Header */}
+            <div className="px-5 py-3.5 border-b border-slate-200 flex items-center justify-between bg-slate-50">
+              <div className="flex items-center gap-2">
+                <div className="p-2 rounded-xl bg-indigo-600 text-white">
+                  <ShieldCheck className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-sm md:text-base text-slate-800">
+                    Lacak Servis & Validasi Klaim Garansi
+                  </h3>
+                  <p className="text-[11px] text-slate-500">
+                    Inspeksi riwayat pengerjaan, status pelunasan, & masa aktif garansi toko
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setShowTrackingModal(false);
+                  setTrackingResult(null);
+                  setTrackingError('');
+                }}
+                className="text-slate-400 hover:text-slate-700 p-1.5 rounded-lg hover:bg-slate-200 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-5 overflow-y-auto space-y-4">
+              {/* Search Form */}
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  handleSearchTracking();
+                }}
+                className="flex items-center gap-2"
+              >
+                <div className="relative flex-1">
+                  <Search className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
+                  <input
+                    type="text"
+                    autoFocus
+                    placeholder="Masukkan No Tiket (SRV-...), IMEI, atau No HP..."
+                    value={trackingQuery}
+                    onChange={(e) => setTrackingQuery(e.target.value)}
+                    className="w-full pl-9 pr-3 py-2 rounded-xl border-2 border-slate-300 focus:border-indigo-600 focus:outline-hidden font-mono text-xs md:text-sm font-bold bg-slate-50 focus:bg-white"
+                  />
+                </div>
+                <button
+                  type="submit"
+                  disabled={trackingLoading}
+                  className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl transition cursor-pointer disabled:opacity-50 shrink-0 min-h-[38px]"
+                >
+                  {trackingLoading ? 'Mencari...' : 'Periksa'}
+                </button>
+              </form>
+
+              {trackingError && (
+                <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-800 flex items-center gap-2 font-medium">
+                  <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
+                  <span>{trackingError}</span>
+                </div>
+              )}
+
+              {/* Result Details */}
+              {trackingResult && trackingResult.service && (
+                <div className="space-y-4">
+                  {/* Warranty Status Banner */}
+                  {trackingResult.warranty && (
+                    <div className={`p-4 rounded-2xl border transition ${
+                      trackingResult.service.status === 'PICKED_UP'
+                        ? trackingResult.warranty.is_active
+                          ? 'bg-emerald-500 text-white border-emerald-600 shadow-sm'
+                          : 'bg-rose-50 border-rose-200 text-rose-900'
+                        : 'bg-blue-50 border-blue-200 text-blue-900'
+                    }`}>
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <div className="flex items-center gap-1.5 font-black text-xs md:text-sm uppercase tracking-wider">
+                            <ShieldCheck className="w-4 h-4 shrink-0" />
+                            {trackingResult.service.status === 'PICKED_UP' ? (
+                              trackingResult.warranty.is_active ? (
+                                <span>GARANSI SERVIS RESMI AKTIF</span>
+                              ) : (
+                                <span>MASA GARANSI TELAH BERAKHIR</span>
+                              )
+                            ) : (
+                              <span>UNIT BELUM SERAH TERIMA</span>
+                            )}
+                          </div>
+
+                          <div className="mt-1 text-xs">
+                            {trackingResult.service.status === 'PICKED_UP' ? (
+                              trackingResult.warranty.is_active ? (
+                                <p className="text-emerald-50">
+                                  Sisa masa garansi: <strong className="text-white font-black text-sm">{trackingResult.warranty.days_remaining} Hari</strong> (Berlaku s/d {new Date(trackingResult.warranty.expires_at).toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' })}). Pelanggan berhak klaim perbaikan gratis untuk keluhan suku cadang yang sama.
+                                </p>
+                              ) : (
+                                <p className="text-rose-700">
+                                  Garansi 7 hari telah habis pada {new Date(trackingResult.warranty.expires_at).toLocaleDateString('id-ID')}. Klaim perbaikan baru akan dikenakan biaya servis normal.
+                                </p>
+                              )
+                            ) : (
+                              <p className="text-blue-700">
+                                Garansi toko (7 Hari) akan aktif otomatis begitu unit diambil dan diselesaikan pelunasannya di kasir.
+                              </p>
+                            )}
+                          </div>
+                        </div>
+
+                        {trackingResult.service.status === 'PICKED_UP' && trackingResult.warranty.is_active && (
+                          <div className="px-2.5 py-1 rounded-xl bg-white/20 border border-white/30 text-white font-mono font-bold text-xs shrink-0">
+                            {trackingResult.warranty.days_remaining}d
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Device & Customer Card */}
+                  <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 space-y-2.5 text-xs">
+                    <div className="flex items-center justify-between border-b border-slate-200/80 pb-2">
+                      <div>
+                        <div className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">No. Tiket Servis</div>
+                        <div className="font-mono font-black text-slate-800 text-sm">{trackingResult.service.service_no}</div>
+                      </div>
+                      <div className="text-right">
+                        <div className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Status</div>
+                        <div className="mt-0.5">{renderStatusBadge(trackingResult.service.status)}</div>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2 text-slate-700">
+                      <div>
+                        <span className="text-slate-400 text-[10px] block">Pelanggan</span>
+                        <strong className="text-slate-800">{trackingResult.service.customer_name}</strong>
+                        <div className="text-[10.5px] font-mono text-slate-500">{trackingResult.service.customer_phone}</div>
+                      </div>
+                      <div>
+                        <span className="text-slate-400 text-[10px] block">Perangkat / Unit</span>
+                        <strong className="text-slate-800">{trackingResult.service.device_brand_model}</strong>
+                        {trackingResult.service.imei_sn && (
+                          <div className="text-[10.5px] font-mono text-slate-500">IMEI: {trackingResult.service.imei_sn}</div>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="pt-2 border-t border-slate-200/80">
+                      <span className="text-slate-400 text-[10px] block">Keluhan / Kerusakan</span>
+                      <p className="text-slate-800 font-medium">{trackingResult.service.issue_description}</p>
+                      {trackingResult.service.technician_notes && (
+                        <p className="text-indigo-700 font-semibold mt-1 bg-indigo-50/70 p-2 rounded-lg text-[11px]">
+                          Catatan Teknisi: {trackingResult.service.technician_notes}
+                        </p>
+                      )}
+                    </div>
+
+                    <div className="pt-2 border-t border-slate-200/80 flex items-center justify-between">
+                      <div>
+                        <span className="text-slate-400 text-[10px] block">Total Biaya</span>
+                        <span className="font-extrabold text-slate-900 text-sm">
+                          Rp {(trackingResult.service.final_cost || trackingResult.service.estimated_cost || 0).toLocaleString('id-ID')}
+                        </span>
+                      </div>
+                      <div className="text-right">
+                        <span className="text-slate-400 text-[10px] block">Status Biaya</span>
+                        <span className={`font-black text-xs ${
+                          trackingResult.service.status === 'PICKED_UP' ? 'text-emerald-600' : 'text-amber-600'
+                        }`}>
+                          {trackingResult.service.status === 'PICKED_UP' ? 'LUNAS DI KASIR' : 'BELUM DIAMBIL'}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Share / Copy Tracking Link Actions */}
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const url = `${window.location.origin}/services?q=${trackingResult.service.service_no}`;
+                        navigator.clipboard.writeText(url);
+                        alert(`Link tracking disalin:\n${url}`);
+                      }}
+                      className="flex-1 py-2 rounded-xl border border-slate-300 hover:bg-slate-50 text-slate-700 font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer"
+                    >
+                      <Copy className="w-3.5 h-3.5" />
+                      <span>Salin Link Tracking</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        let phone = trackingResult.service.customer_phone.replace(/\D/g, '');
+                        if (phone.startsWith('0')) phone = '62' + phone.slice(1);
+                        const msg = `Halo Kak ${trackingResult.service.customer_name}, berikut status servis unit ${trackingResult.service.device_brand_model} (No: ${trackingResult.service.service_no}): Status: ${trackingResult.service.status}.`;
+                        window.open(`https://wa.me/${phone}?text=${encodeURIComponent(msg)}`, '_blank');
+                      }}
+                      className="flex-1 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer shadow-xs"
+                    >
+                      <Send className="w-3.5 h-3.5" />
+                      <span>Kirim Info ke WA</span>
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </div>

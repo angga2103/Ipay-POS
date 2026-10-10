@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#2563eb" />
+      <stop offset="100%" stop-color="#4f46e5" />
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-opacity="0.25"/>
+    </filter>
+  </defs>
+  <!-- Rounded App Icon Base -->
+  <rect width="512" height="512" rx="112" fill="url(#grad)" />
+  <!-- Store & Shopping Cart Bag Motif -->
+  <g filter="url(#shadow)" fill="none" stroke="#ffffff" stroke-width="26" stroke-linecap="round" stroke-linejoin="round" transform="translate(48, 48)">
+    <!-- Shopping Bag Body -->
+    <path d="M72 152 L344 152 L320 376 C318 392, 304 404, 288 404 L128 404 C112 404, 98 392, 96 376 Z" fill="#ffffff" fill-opacity="0.12" />
+    <!-- Bag Handles -->
+    <path d="M144 152 C144 96, 272 96, 272 152" />
+    <!-- Lightning Bolt (iPay / PPOB) inside -->
+    <polygon points="216,192 168,280 208,280 192,368 256,264 216,264" fill="#fbbf24" stroke="#d97706" stroke-width="10" />
+  </g>
+</svg>

@@ -6,6 +6,7 @@ import {
 import { useCart } from '../context/CartContext';
 import { useShift } from '../context/ShiftContext';
 import { useAuth } from '../context/AuthContext';
+import { playSuccessChime, playErrorBoop } from '../utils/audio';
 
 interface PaymentModalProps {
   isOpen: boolean;
@@ -109,19 +110,40 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose, onS
     setCashTendered(prev => prev + amount);
   };
 
+  // Dynamic smart cash denominations based on actual grand total
+  const getSmartCashSuggestions = (total: number): number[] => {
+    if (total <= 0) return [10000, 20000, 50000, 100000];
+    const suggestions = new Set<number>();
+    suggestions.add(total); // Uang Pas
+
+    const roundSteps = [5000, 10000, 20000, 50000, 100000, 200000, 500000];
+    roundSteps.forEach(step => {
+      const rounded = Math.ceil(total / step) * step;
+      if (rounded >= total) {
+        suggestions.add(rounded);
+      }
+    });
+
+    const sorted = Array.from(suggestions).sort((a, b) => a - b);
+    return sorted.slice(0, 6);
+  };
+
   const handleCheckout = async () => {
     if (!activeShift) {
+      playErrorBoop();
       setErrorMsg('Shift kasir belum aktif! Buka shift terlebih dahulu.');
       return;
     }
 
     if (paymentMethod === 'CASH' && cashTendered < grandTotal) {
+      playErrorBoop();
       setErrorMsg('Uang pembayaran tunai kurang dari total belanja');
       return;
     }
 
     if (paymentMethod === 'KASBON') {
       if (!selectedCustomerId) {
+        playErrorBoop();
         setErrorMsg('Silakan pilih nama pelanggan yang mengambil kasbon!');
         return;
       }
@@ -129,6 +151,7 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose, onS
       if (selCustomer && selCustomer.credit_limit > 0) {
         const newTotalDebt = (selCustomer.current_debt || 0) + grandTotal;
         if (newTotalDebt > selCustomer.credit_limit) {
+          playErrorBoop();
           setErrorMsg(
             `Transaksi kasbon ditolak! Melebihi batas plafon Rp ${selCustomer.credit_limit.toLocaleString('id-ID')} (Hutang saat ini: Rp ${selCustomer.current_debt.toLocaleString('id-ID')}, belanja: Rp ${grandTotal.toLocaleString('id-ID')}, Total Baru: Rp ${newTotalDebt.toLocaleString('id-ID')}).`
           );
@@ -165,11 +188,14 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose, onS
         throw new Error(data.error || 'Gagal memproses pembayaran');
       }
 
-      // Success
+      // Success Audio Chime
+      playSuccessChime();
+
       clearCart();
       onSuccess(data.receiptText, data.order, data.items);
       onClose();
     } catch (err: any) {
+      playErrorBoop();
       setErrorMsg(err.message || 'Terjadi kesalahan sistem saat checkout');
     } finally {
       setIsProcessing(false);
@@ -484,67 +510,71 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose, onS
                 />
               </div>
 
-              {/* Fast Denomination Buttons */}
-              <div className="grid grid-cols-4 gap-2">
-                <button
-                  type="button"
-                  onClick={() => handleQuickCash(grandTotal)}
-                  className="py-2.5 px-3 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 font-bold text-xs rounded-xl border border-emerald-200 transition cursor-pointer"
-                >
-                  Uang Pas
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleAddCash(10000)}
-                  className="py-2.5 px-3 bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold text-xs rounded-xl border border-slate-200 transition cursor-pointer"
-                >
-                  +10.000
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleAddCash(50000)}
-                  className="py-2.5 px-3 bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold text-xs rounded-xl border border-slate-200 transition cursor-pointer"
-                >
-                  +50.000
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleAddCash(100000)}
-                  className="py-2.5 px-3 bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold text-xs rounded-xl border border-slate-200 transition cursor-pointer"
-                >
-                  +100.000
-                </button>
+              {/* Smart Dynamic Cash Rounding Suggestions */}
+              <div>
+                <div className="text-[11px] font-bold text-slate-500 mb-1.5 flex items-center justify-between">
+                  <span>Pilihan Cepat Uang Pelanggan:</span>
+                  <span className="text-[10px] text-blue-600 font-semibold">Otomatis Dibulatkan</span>
+                </div>
+                <div className="grid grid-cols-3 sm:grid-cols-6 gap-1.5">
+                  {getSmartCashSuggestions(grandTotal).map(val => (
+                    <button
+                      key={val}
+                      type="button"
+                      onClick={() => handleQuickCash(val)}
+                      className={`py-2 px-1 text-center font-mono font-bold text-xs rounded-xl border transition cursor-pointer ${
+                        cashTendered === val
+                          ? 'bg-blue-600 text-white border-blue-700 shadow-sm ring-2 ring-blue-300'
+                          : val === grandTotal
+                          ? 'bg-emerald-50 text-emerald-800 border-emerald-300 hover:bg-emerald-100 font-black'
+                          : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+                      }`}
+                    >
+                      {val === grandTotal ? 'Uang Pas' : `Rp ${val.toLocaleString('id-ID')}`}
+                    </button>
+                  ))}
+                </div>
               </div>
 
-              {/* Quick Rounded Buttons */}
-              <div className="grid grid-cols-4 gap-2">
-                {[50000, 100000, 150000, 200000].map(val => (
+              {/* Fast Increment Buttons */}
+              <div className="grid grid-cols-5 gap-1.5">
+                {[5000, 10000, 20000, 50000, 100000].map(step => (
                   <button
-                    key={val}
+                    key={step}
                     type="button"
-                    onClick={() => handleQuickCash(val)}
-                    className="py-2 px-2 bg-slate-50 hover:bg-slate-100 text-slate-700 font-mono font-bold text-xs rounded-xl border border-slate-200 transition cursor-pointer"
+                    onClick={() => handleAddCash(step)}
+                    className="py-1.5 px-1 bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold text-[11px] font-mono rounded-xl border border-slate-200 transition cursor-pointer text-center"
                   >
-                    Rp {val.toLocaleString('id-ID')}
+                    +{step >= 1000 ? `${step / 1000}rb` : step}
                   </button>
                 ))}
               </div>
 
-              {/* Change Box */}
-              <div className={`p-4 rounded-xl border flex items-center justify-between ${
-                isCashSufficient ? 'bg-emerald-50 border-emerald-200' : 'bg-rose-50 border-rose-200'
+              {/* Giant High-Contrast Change Display */}
+              <div className={`p-4 sm:p-5 rounded-2xl border-2 transition-all flex items-center justify-between shadow-xs ${
+                isCashSufficient 
+                  ? 'bg-emerald-600 text-white border-emerald-700 shadow-emerald-200' 
+                  : 'bg-rose-50 border-rose-300 text-rose-900'
               }`}>
                 <div>
-                  <span className={`text-xs font-bold ${isCashSufficient ? 'text-emerald-800' : 'text-rose-800'}`}>
-                    {isCashSufficient ? 'Kembalian Uang Kas' : 'Uang Kurang'}
+                  <span className={`text-[11px] font-black uppercase tracking-wider ${
+                    isCashSufficient ? 'text-emerald-100' : 'text-rose-700'
+                  }`}>
+                    {isCashSufficient ? 'KEMBALIAN UANG KASIR' : 'UANG KURANG (BELUM CUKUP)'}
                   </span>
-                  <div className={`text-2xl font-black font-mono ${isCashSufficient ? 'text-emerald-700' : 'text-rose-600'}`}>
+                  <div className={`text-3xl sm:text-4xl font-black font-mono tracking-tight mt-0.5 ${
+                    isCashSufficient ? 'text-white' : 'text-rose-700'
+                  }`}>
                     Rp {(isCashSufficient ? changeAmount : grandTotal - cashTendered).toLocaleString('id-ID')}
                   </div>
                 </div>
-                {isCashSufficient && (
-                  <div className="w-9 h-9 rounded-full bg-emerald-600 text-white flex items-center justify-center">
-                    <Check className="w-5 h-5" />
+                {isCashSufficient ? (
+                  <div className="w-12 h-12 rounded-2xl bg-white/20 border border-white/30 text-white flex items-center justify-center shrink-0">
+                    <Check className="w-7 h-7 stroke-[3]" />
+                  </div>
+                ) : (
+                  <div className="w-10 h-10 rounded-xl bg-rose-200 text-rose-700 flex items-center justify-center shrink-0">
+                    <AlertCircle className="w-6 h-6" />
                   </div>
                 )}
               </div>

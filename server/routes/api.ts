@@ -3729,6 +3729,65 @@ apiRouter.get('/services/:id/receipt', (req: Request, res: Response) => {
   }
 });
 
+// Endpoint Publik / Kasir: Cek Tracking Status & Klaim Garansi Servis (Tiket/IMEI/No HP)
+apiRouter.get('/public/service-tracking/:query', (req: Request, res: Response) => {
+  try {
+    const query = req.params.query.trim();
+    if (!query) return res.status(400).json({ error: 'Nomor tiket atau IMEI wajib diisi' });
+
+    const service = db.prepare(`
+      SELECT 
+        id, service_no, customer_name, customer_phone, device_brand_model,
+        imei_sn, issue_description, completeness, estimated_cost, down_payment,
+        final_cost, technician_name, technician_notes, status, created_at,
+        completed_at, picked_up_at
+      FROM service_orders 
+      WHERE service_no = ? 
+         OR UPPER(imei_sn) = UPPER(?) 
+         OR REPLACE(REPLACE(customer_phone, '-', ''), ' ', '') = REPLACE(REPLACE(?, '-', ''), ' ', '')
+      ORDER BY id DESC LIMIT 1
+    `).get(query, query, query) as any;
+
+    if (!service) {
+      return res.status(404).json({ error: `Servis atau IMEI "${query}" tidak ditemukan.` });
+    }
+
+    // Perhitungan Garansi Servis Toko (Standar 7 Hari dari tanggal serah terima unit)
+    const warranty = {
+      is_eligible: false,
+      is_active: false,
+      days_remaining: 0,
+      warranty_duration_days: 7,
+      picked_up_at: service.picked_up_at || null,
+      expires_at: null as string | null,
+    };
+
+    if (service.status === 'PICKED_UP' && service.picked_up_at) {
+      warranty.is_eligible = true;
+      const pickupDate = new Date(service.picked_up_at);
+      const expiryDate = new Date(pickupDate.getTime() + 7 * 24 * 3600 * 1000);
+      warranty.expires_at = expiryDate.toISOString();
+      const diffMs = expiryDate.getTime() - Date.now();
+      const daysRemaining = Math.ceil(diffMs / (1000 * 3600 * 24));
+
+      if (diffMs > 0) {
+        warranty.is_active = true;
+        warranty.days_remaining = daysRemaining;
+      } else {
+        warranty.is_active = false;
+        warranty.days_remaining = 0;
+      }
+    }
+
+    res.json({
+      service,
+      warranty,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ============================================================
 // 10. SISTEM DINAMIS AUTO-BACKUP & DATABASE RESTORATION
 // ============================================================

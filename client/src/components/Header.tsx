@@ -4,8 +4,10 @@ import { useShift } from '../context/ShiftContext';
 import { usePPOB } from '../context/PPOBContext';
 import { 
   Wallet, RefreshCw, AlertTriangle, Clock, UserCheck, 
-  Store, ChevronDown, LogOut, PanelLeftClose, PanelLeftOpen 
+  Store, ChevronDown, LogOut, PanelLeftClose, PanelLeftOpen,
+  Volume2, VolumeX
 } from 'lucide-react';
+import { isSoundEnabled, toggleSound } from '../utils/audio';
 import { SwitchUserModal } from './SwitchUserModal';
 import { User } from '../types';
 
@@ -23,6 +25,12 @@ export const Header: React.FC<HeaderProps> = ({ isSidebarCollapsed, onToggleSide
   const [showUserDropdown, setShowUserDropdown] = useState(false);
   const [switchModalOpen, setSwitchModalOpen] = useState(false);
   const [targetUserForSwitch, setTargetUserForSwitch] = useState<User | null>(null);
+  const [soundActive, setSoundActive] = useState<boolean>(() => isSoundEnabled());
+
+  const handleToggleSound = () => {
+    const next = toggleSound();
+    setSoundActive(next);
+  };
 
   useEffect(() => {
     const updateTime = () => {
@@ -154,6 +162,20 @@ export const Header: React.FC<HeaderProps> = ({ isSidebarCollapsed, onToggleSide
               <div className="text-[10px] text-slate-500 leading-tight">{date}</div>
             </div>
           </div>
+
+          {/* Sound Synthesizer Audio Toggle */}
+          <button
+            type="button"
+            onClick={handleToggleSound}
+            className={`p-1.5 sm:p-2 rounded-xl border transition cursor-pointer ${
+              soundActive
+                ? 'bg-blue-50 border-blue-200 text-blue-700 hover:bg-blue-100'
+                : 'bg-slate-100 border-slate-200 text-slate-400 hover:text-slate-600'
+            }`}
+            title={soundActive ? 'Suara Kasir Aktif (Klik untuk Bisu)' : 'Suara Kasir Dibisukan (Klik untuk Aktifkan)'}
+          >
+            {soundActive ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
+          </button>
 
           {/* User Switcher Dropdown with RBAC Security */}
           <div className="relative">
