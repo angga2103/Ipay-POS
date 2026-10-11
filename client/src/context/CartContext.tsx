@@ -3,7 +3,7 @@ import { CartItem, Product } from '../types';
 
 interface CartContextType {
   items: CartItem[];
-  addItem: (product: Product, unitName?: string, imeiSn?: string) => void;
+  addItem: (product: Product, unitName?: string, imeiSn?: string, qtyToAdd?: number) => void;
   addPPOBItem: (ppobItem: {
     sku: string;
     product_name: string;
@@ -15,7 +15,7 @@ interface CartContextType {
   }) => void;
   updateQuantity: (id: string, qty: number) => void;
   updateDiscount: (id: string, discount: number) => void;
-  changeUnit: (id: string, unitName: string) => void;
+  changeUnit: (id: string, unitName: string, productObj?: Product) => void;
   removeItem: (id: string) => void;
   clearCart: () => void;
   heldBills: any[];
@@ -76,9 +76,10 @@ export const CartProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   /**
-   * Add retail product to hybrid cart
+   * Add retail product to hybrid cart (supports custom qty multiplier e.g. 5*indomie)
    */
-  const addItem = (product: Product, unitName?: string, imeiSn?: string) => {
+  const addItem = (product: Product, unitName?: string, imeiSn?: string, qtyToAdd: number = 1) => {
+    const addQty = Math.max(1, Math.floor(qtyToAdd || 1));
     const selectedUnitName = unitName || product.base_uom;
     const unitObj = product.units?.find(u => u.unit_name === selectedUnitName);
     const conversionFactor = unitObj ? unitObj.conversion_factor : 1;
@@ -95,7 +96,7 @@ export const CartProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       if (existingIndex > -1) {
         const existing = prev[existingIndex];
-        const newQty = existing.quantity + 1;
+        const newQty = existing.quantity + addQty;
         // Check tier pricing for base unit
         const effectiveUnitPrice = selectedUnitName === product.base_uom
           ? getTieredPrice(product, newQty, baseSellingPrice)
@@ -113,7 +114,7 @@ export const CartProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       // New item line
       const effectiveUnitPrice = selectedUnitName === product.base_uom
-        ? getTieredPrice(product, 1, baseSellingPrice)
+        ? getTieredPrice(product, addQty, baseSellingPrice)
         : baseSellingPrice;
 
       const newItem: CartItem = {
@@ -125,12 +126,12 @@ export const CartProvider: React.FC<{ children: React.ReactNode }> = ({ children
         item_name: product.name,
         unit_name: selectedUnitName,
         conversion_factor: conversionFactor,
-        quantity: 1,
+        quantity: addQty,
         cost_price: product.cost_price * conversionFactor,
         base_unit_price: baseSellingPrice,
         unit_price: effectiveUnitPrice,
         discount_amount: 0,
-        subtotal: effectiveUnitPrice,
+        subtotal: effectiveUnitPrice * addQty,
         imei_sn: imeiSn,
       };
 
@@ -181,7 +182,6 @@ export const CartProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setItems(prev =>
       prev.map(it => {
         if (it.id !== id) return it;
-        // If retail, check if tier discount applies
         const newSubtotal = (qty * it.unit_price) - it.discount_amount;
         return {
           ...it,
@@ -193,17 +193,13 @@ export const CartProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   /**
-   * Change UOM Unit of item (e.g. from Pcs to Dus)
+   * Change UOM Unit of item (e.g. from Pcs to Pack/Dus) - Instant when productObj provided
    */
-  const changeUnit = async (id: string, unitName: string) => {
+  const changeUnit = async (id: string, unitName: string, productObj?: Product) => {
     const item = items.find(it => it.id === id);
     if (!item || item.item_type !== 'RETAIL' || !item.product_id) return;
 
-    try {
-      const res = await fetch(`/api/products/lookup?q=${item.sku}`);
-      if (!res.ok) return;
-      const product: Product = await res.json();
-
+    const applyUnitChange = (product: Product) => {
       const unitObj = product.units?.find(u => u.unit_name === unitName);
       const conversion = unitObj ? unitObj.conversion_factor : 1;
       const newPrice = unitObj ? unitObj.selling_price : product.selling_price;
@@ -218,10 +214,22 @@ export const CartProvider: React.FC<{ children: React.ReactNode }> = ({ children
             base_unit_price: newPrice,
             unit_price: newPrice,
             cost_price: product.cost_price * conversion,
-            subtotal: (it.quantity * newPrice) - it.discount_amount,
+            subtotal: Math.max(0, (it.quantity * newPrice) - it.discount_amount),
           };
         })
       );
+    };
+
+    if (productObj) {
+      applyUnitChange(productObj);
+      return;
+    }
+
+    try {
+      const res = await fetch(`/api/products/lookup?q=${encodeURIComponent(item.sku || item.barcode || item.item_name)}`);
+      if (!res.ok) return;
+      const product: Product = await res.json();
+      applyUnitChange(product);
     } catch (err) {
       console.error('Failed to change unit:', err);
     }
