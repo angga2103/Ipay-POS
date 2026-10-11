@@ -1302,8 +1302,8 @@ export const PPOBManagerPage: React.FC = () => {
                     <button
                       type="button"
                       onClick={() => {
+                        setActiveTab('config');
                         window.scrollTo({ top: 0, behavior: 'smooth' });
-                        setShowProvisionForm(true);
                       }}
                       className="px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-extrabold text-[11px] transition cursor-pointer flex items-center gap-1"
                     >

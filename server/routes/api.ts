@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import crypto from 'crypto';
 import db from '../db/database';
-import { getTenantDatabase, tenantContext, getAllTenantSummaries, sanitizeTenantId, defaultDb, getAllTenantIds } from '../db/tenant';
+import { getTenantDatabase, tenantContext, getAllTenantSummaries, sanitizeTenantId, defaultDb, getAllTenantIds, resolveWebhookTenantIds } from '../db/tenant';
 import { requireRole } from '../middleware/tenant';
 import { createAuthToken, verifySecret, hashSecret, createOtpSessionToken, verifyOtpSessionToken, createPinSessionToken, verifyPinSessionToken, generateRecoveryKey } from '../utils/auth-token';
 import { AccountingService } from '../services/accounting';
@@ -1770,29 +1770,42 @@ apiRouter.post('/ppob/provision/dismiss-banner', (_req: Request, res: Response) 
   }
 });
 
+// Endpoint Daftar Broadcast Aktif dari Admin ipay.my.id
+apiRouter.get('/ppob/broadcasts', async (_req: Request, res: Response) => {
+  try {
+    const broadcasts = await PPOBService.fetchBroadcasts();
+    res.json({ status: 'success', data: broadcasts, broadcasts });
+  } catch (err: any) {
+    res.status(500).json({ status: 'error', error: err.message, data: [] });
+  }
+});
+
 // Endpoint Push Callback dari ipay.my.id saat Admin klik [TERIMA] atau [TOLAK] di Telegram
 apiRouter.post('/ppob/provision-callback', async (req: Request, res: Response) => {
   try {
-    const rawTenantId = (req.query.tenant_id as string)
-      || req.body?.tenant_id
-      || req.body?.data?.tenant_id
-      || req.tenantId
-      || 'default';
-    const targetTenantId = sanitizeTenantId(String(rawTenantId));
-    const targetDb = getTenantDatabase(targetTenantId);
+    if (String(req.body?.event || '').toLowerCase() === 'ping') {
+      return res.status(200).json({ status: 'ok', message: 'POS Webhook Online' });
+    }
 
-    const result = await new Promise((resolve, reject) => {
-      tenantContext.run({ tenantId: targetTenantId, db: targetDb }, async () => {
-        try {
-          const r = await PPOBService.handleProvisionCallback(req.body);
-          resolve(r);
-        } catch (e) {
-          reject(e);
-        }
+    const headerMerchant = (req.headers['x-merchant-id'] || req.headers['x-ipay-merchant'] || '') as string;
+    const targetTenants = resolveWebhookTenantIds(req.body, req.query.tenant_id as string, headerMerchant);
+
+    let lastResult: any = { status: true, message: 'Callback received' };
+    for (const targetTenantId of targetTenants) {
+      const targetDb = getTenantDatabase(targetTenantId);
+      lastResult = await new Promise((resolve, reject) => {
+        tenantContext.run({ tenantId: targetTenantId, db: targetDb }, async () => {
+          try {
+            const r = await PPOBService.handleProvisionCallback(req.body);
+            resolve(r);
+          } catch (e) {
+            reject(e);
+          }
+        });
       });
-    });
+    }
 
-    res.json(result);
+    res.json(lastResult);
   } catch (err: any) {
     console.error('[PPOB Provision Callback Error]:', err);
     res.status(500).json({ status: false, message: err.message });
@@ -1895,18 +1908,37 @@ apiRouter.post('/ppob/purchase', async (req: Request, res: Response) => {
   }
 });
 
-apiRouter.post('/ppob/webhook', (req: Request, res: Response) => {
+// Endpoint Webhook Utama dari POS Command Center ipay.my.id (ping, transaction.updated, credentials.synced, balance.updated, deposit.approved, pos.broadcast)
+apiRouter.post('/ppob/webhook', async (req: Request, res: Response) => {
   try {
-    const rawTenantId = (req.query.tenant_id as string) || req.body?.tenant_id || req.tenantId || 'default';
-    const targetTenantId = sanitizeTenantId(String(rawTenantId));
-    const targetDb = getTenantDatabase(targetTenantId);
+    const event = String(req.body?.event || req.body?.type || '').toLowerCase().trim();
+    if (event === 'ping') {
+      return res.status(200).json({ status: 'ok', message: 'POS Webhook Online' });
+    }
 
-    tenantContext.run({ tenantId: targetTenantId, db: targetDb }, () => {
-      const result = PPOBService.handleWebhook(req.body);
-      res.json(result);
-    });
+    const headerMerchant = (req.headers['x-merchant-id'] || req.headers['x-ipay-merchant'] || '') as string;
+    const targetTenants = resolveWebhookTenantIds(req.body, req.query.tenant_id as string, headerMerchant);
+
+    let lastResult: any = { status: 'ok', message: 'POS Webhook Online' };
+    for (const targetTenantId of targetTenants) {
+      const targetDb = getTenantDatabase(targetTenantId);
+      const r: any = await new Promise((resolve, reject) => {
+        tenantContext.run({ tenantId: targetTenantId, db: targetDb }, async () => {
+          try {
+            const out = await PPOBService.handleWebhook(req.body);
+            resolve(out);
+          } catch (e) {
+            reject(e);
+          }
+        });
+      });
+      if (r) lastResult = r;
+    }
+
+    res.status(200).json(lastResult);
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[PPOB Webhook Error]:', err);
+    res.status(500).json({ status: 'error', error: err.message });
   }
 });
 

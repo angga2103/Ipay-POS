@@ -542,3 +542,134 @@ export function getAllTenantSummaries(): { id: string; name: string }[] {
   }
   return result;
 }
+
+/**
+ * Smart Multi-Tenant Resolver for incoming webhooks from ipay.my.id Command Center
+ * Resolves target tenant(s) using explicit tenant_id, merchant_id, request_id, ref_id, or phone/store_name
+ */
+export function resolveWebhookTenantIds(
+  payload: any,
+  queryTenantId?: string,
+  headerMerchantId?: string
+): string[] {
+  const data = (payload && typeof payload.data === 'object' && payload.data) ? payload.data : (payload || {});
+  const explicitTenant = String(
+    queryTenantId || payload?.tenant_id || data?.tenant_id || payload?.tenantId || data?.tenantId || ''
+  ).trim();
+
+  if (explicitTenant && explicitTenant !== 'default') {
+    return [sanitizeTenantId(explicitTenant)];
+  }
+
+  const event = String(payload?.event || data?.event || payload?.type || '').toLowerCase().trim();
+  const merchantId = String(
+    payload?.merchant_id || data?.merchant_id || payload?.credentials?.merchant_id || data?.credentials?.merchant_id || headerMerchantId || ''
+  ).trim();
+  const requestId = String(payload?.request_id || data?.request_id || '').trim();
+  const refId = String(payload?.ref_id || payload?.client_ref_id || data?.ref_id || data?.client_ref_id || '').trim();
+  const phone = String(payload?.phone || data?.phone || '').trim();
+  const storeName = String(payload?.store_name || data?.store_name || '').trim();
+
+  const allTenants = getAllTenantIds();
+
+  // Global POS Broadcast without a specific merchant_id applies to all active stores
+  if (event === 'pos.broadcast' && !merchantId && !explicitTenant) {
+    return allTenants;
+  }
+
+  // 1. Match by ipay_merchant_id
+  if (merchantId) {
+    const matchedByMerchant: string[] = [];
+    for (const tId of allTenants) {
+      try {
+        const tDb = getTenantDatabase(tId);
+        const row = tDb.prepare("SELECT value FROM settings WHERE key = 'ipay_merchant_id'").get() as { value?: string } | undefined;
+        if (row?.value && row.value.trim() === merchantId) {
+          matchedByMerchant.push(tId);
+        }
+      } catch {}
+    }
+    if (matchedByMerchant.length > 0) return matchedByMerchant;
+  }
+
+  // 2. Match by ipay_provision_request_id
+  if (requestId) {
+    const matchedByReq: string[] = [];
+    for (const tId of allTenants) {
+      try {
+        const tDb = getTenantDatabase(tId);
+        const row = tDb.prepare("SELECT value FROM settings WHERE key = 'ipay_provision_request_id'").get() as { value?: string } | undefined;
+        if (row?.value && row.value.trim() === requestId) {
+          matchedByReq.push(tId);
+        }
+      } catch {}
+    }
+    if (matchedByReq.length > 0) return matchedByReq;
+  }
+
+  // 3. Match by transaction ref_id or deposit ref_id
+  if (refId) {
+    const matchedByRef: string[] = [];
+    for (const tId of allTenants) {
+      try {
+        const tDb = getTenantDatabase(tId);
+        const txRow = tDb.prepare('SELECT id FROM ppob_transactions WHERE ref_id = ? LIMIT 1').get(refId);
+        if (txRow) {
+          matchedByRef.push(tId);
+          continue;
+        }
+        const depRow = tDb.prepare('SELECT id FROM ppob_deposits WHERE ref_id = ? LIMIT 1').get(refId);
+        if (depRow) {
+          matchedByRef.push(tId);
+        }
+      } catch {}
+    }
+    if (matchedByRef.length > 0) return matchedByRef;
+  }
+
+  // 4. Match by store_phone or store_name (useful when credentials.synced arrives before merchant_id is saved)
+  if (phone || storeName) {
+    const matchedByMeta: string[] = [];
+    for (const tId of allTenants) {
+      try {
+        const tDb = getTenantDatabase(tId);
+        if (phone) {
+          const pRow = tDb.prepare("SELECT value FROM settings WHERE key = 'store_phone'").get() as { value?: string } | undefined;
+          if (pRow?.value && pRow.value.trim() === phone) {
+            matchedByMeta.push(tId);
+            continue;
+          }
+        }
+        if (storeName) {
+          const sRow = tDb.prepare("SELECT value FROM settings WHERE key = 'store_name'").get() as { value?: string } | undefined;
+          if (sRow?.value && sRow.value.trim().toLowerCase() === storeName.toLowerCase()) {
+            matchedByMeta.push(tId);
+          }
+        }
+      } catch {}
+    }
+    if (matchedByMeta.length > 0) return matchedByMeta;
+  }
+
+  // 5. If credentials.synced or APPROVED callback arrives and no match yet, check any PENDING tenant
+  if (event === 'credentials.synced' || String(payload?.status || data?.status || payload?.provision_status || '').toUpperCase() === 'APPROVED') {
+    const pendingTenants: string[] = [];
+    for (const tId of allTenants) {
+      try {
+        const tDb = getTenantDatabase(tId);
+        const stRow = tDb.prepare("SELECT value FROM settings WHERE key = 'ipay_provision_status'").get() as { value?: string } | undefined;
+        if (stRow?.value === 'PENDING') {
+          pendingTenants.push(tId);
+        }
+      } catch {}
+    }
+    if (pendingTenants.length > 0) return pendingTenants;
+  }
+
+  if (explicitTenant) {
+    return [sanitizeTenantId(explicitTenant)];
+  }
+
+  return ['default'];
+}
+

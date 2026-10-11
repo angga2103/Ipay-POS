@@ -12,7 +12,102 @@ export interface PPOBConfig {
   lowBalanceThreshold: number;
 }
 
+export interface PPOBBroadcast {
+  id: number | string;
+  title: string;
+  message: string;
+  level: 'info' | 'warning' | 'promo' | 'urgent' | string;
+  created_at?: string;
+}
+
 export class PPOBService {
+  /**
+   * Normalize and persist active POS broadcasts from ipay.my.id
+   */
+  static getBroadcasts(): PPOBBroadcast[] {
+    try {
+      const row = db.prepare("SELECT value FROM settings WHERE key = 'ipay_pos_broadcasts'").get() as { value: string } | undefined;
+      if (!row || !row.value) return [];
+      const parsed = JSON.parse(row.value);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+
+  static saveBroadcasts(rawList: any[]): PPOBBroadcast[] {
+    if (!Array.isArray(rawList)) return this.getBroadcasts();
+    const normalized: PPOBBroadcast[] = rawList
+      .filter((b: any) => b && (b.title || b.message))
+      .map((b: any, idx: number) => ({
+        id: b.id ?? `bcast_${idx}_${ String(b.title || '').slice(0, 12) }`,
+        title: String(b.title || 'Pengumuman Server iPay').trim(),
+        message: String(b.message || b.content || '').trim(),
+        level: String(b.level || b.type || 'info').toLowerCase().trim(),
+        created_at: String(b.created_at || b.date || new Date().toLocaleString('id-ID')).trim(),
+      }));
+
+    db.prepare("INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES ('ipay_pos_broadcasts', ?, CURRENT_TIMESTAMP)")
+      .run(JSON.stringify(normalized));
+    return normalized;
+  }
+
+  static async fetchBroadcasts(cfg?: PPOBConfig): Promise<PPOBBroadcast[]> {
+    const config = cfg || this.getConfig();
+    const cleanBase = config.baseUrl.replace(/\/+$/, '');
+    const mchQuery = config.merchantId && config.merchantId !== 'IPAY_MCH_00789'
+      ? `?merchant_id=${encodeURIComponent(config.merchantId)}`
+      : '';
+    const urls = [
+      `http://127.0.0.1:5000/api/v1/pos/broadcasts${mchQuery}`,
+      `${cleanBase}/api/v1/pos/broadcasts${mchQuery}`,
+    ];
+
+    for (const url of urls) {
+      try {
+        const res = await fetch(url, {
+          method: 'GET',
+          headers: this.getAuthHeaders(config),
+        });
+        if (!res.ok) continue;
+        const json = await res.json().catch(() => null) as any;
+        if (!json) continue;
+        const list = Array.isArray(json.broadcasts)
+          ? json.broadcasts
+          : (Array.isArray(json.data) ? json.data : (Array.isArray(json.data?.broadcasts) ? json.data.broadcasts : null));
+        if (Array.isArray(list)) {
+          return this.saveBroadcasts(list);
+        }
+      } catch {
+        // try next url
+      }
+    }
+    return this.getBroadcasts();
+  }
+
+  static recordWebhookEvent(event: string, message: string, extra: Record<string, any> = {}) {
+    try {
+      const payload = {
+        id: `evt_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        event,
+        message,
+        timestamp: new Date().toISOString(),
+        ...extra,
+      };
+      db.prepare("INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES ('ipay_last_webhook_event', ?, CURRENT_TIMESTAMP)")
+        .run(JSON.stringify(payload));
+    } catch {}
+  }
+
+  static getLastWebhookEvent(): any {
+    try {
+      const row = db.prepare("SELECT value FROM settings WHERE key = 'ipay_last_webhook_event'").get() as { value: string } | undefined;
+      return row?.value ? JSON.parse(row.value) : null;
+    } catch {
+      return null;
+    }
+  }
+
   /**
    * Load active PPOB configuration from database
    */
@@ -238,8 +333,8 @@ export class PPOBService {
       owner_name: ownerName,
       phone,
       tenant_id: tenantId,
-      webhook_url: `${posOrigin}/api/ppob/webhook?tenant_id=${encodeURIComponent(tenantId)}`,
-      callback_url: `${posOrigin}/api/ppob/provision-callback?tenant_id=${encodeURIComponent(tenantId)}`,
+      webhook_url: `${posOrigin}/api/ppob/webhook`,
+      callback_url: `${posOrigin}/api/ppob/provision-callback`,
     };
 
     const cleanBase = config.baseUrl.replace(/\/+$/, '');
@@ -409,7 +504,7 @@ export class PPOBService {
   }
 
   /**
-   * Get Real-time PPOB Balance (Synchronized with COA Account 1-1003)
+   * Get Real-time PPOB Balance (Synchronized with COA Account 1-1003) & Active Broadcasts
    */
   static async getBalance(skipProvisionCheck = false): Promise<{
     balance: number;
@@ -419,6 +514,8 @@ export class PPOBService {
     provisionStatus: 'NONE' | 'PENDING' | 'APPROVED' | 'REJECTED';
     justApproved: boolean;
     merchantId: string;
+    broadcasts: PPOBBroadcast[];
+    lastWebhookEvent: any;
   }> {
     let config = this.getConfig();
     let prov = this.getProvisionStatus();
@@ -434,43 +531,71 @@ export class PPOBService {
     // Query balance from local ledger (Akun 1-1003)
     const acc = db.prepare("SELECT balance FROM chart_of_accounts WHERE code = '1-1003'").get() as { balance: number } | undefined;
     let currentBalance = acc ? acc.balance : 0;
+    let broadcastsUpdatedFromBalance = false;
 
     if (this.isLiveConfigured(config)) {
       try {
-        // Live API call to ipay.my.id check-balance endpoint
         const sign = crypto.createHash('md5').update(`${config.merchantId}${config.secretKey}balance`).digest('hex');
         const cleanBase = config.baseUrl.replace(/\/+$/, '');
-        const balanceUrls = [
-          'http://127.0.0.1:5000/api/v1/profile/balance',
-          `${cleanBase}/api/v1/profile/balance`,
-        ];
-        for (const bUrl of balanceUrls) {
-          try {
-            const res = await fetch(bUrl, {
+        const baseCandidates = ['http://127.0.0.1:5000', cleanBase];
+
+        for (const base of baseCandidates) {
+          let gotBalance = false;
+          // Try GET /api/v1/profile/balance first (supports broadcasts field), then POST fallback
+          const attempts: Array<{ url: string; method: 'GET' | 'POST'; body?: string }> = [
+            {
+              url: `${base}/api/v1/profile/balance?merchant_id=${encodeURIComponent(config.merchantId)}&sign=${encodeURIComponent(sign)}`,
+              method: 'GET',
+            },
+            {
+              url: `${base}/api/v1/profile/balance`,
               method: 'POST',
-              headers: this.getAuthHeaders(config),
               body: JSON.stringify({
                 merchant_id: config.merchantId,
                 signature: sign,
                 sign,
               }),
-            });
+            },
+          ];
 
-            if (res.ok) {
-              const data = await res.json() as any;
-              const liveBal = typeof data?.balance === 'number'
-                ? data.balance
-                : (typeof data?.data?.balance === 'number' ? data.data.balance : undefined);
-              if (typeof liveBal === 'number') {
-                currentBalance = liveBal;
-                break;
+          for (const attempt of attempts) {
+            try {
+              const res = await fetch(attempt.url, {
+                method: attempt.method,
+                headers: this.getAuthHeaders(config),
+                body: attempt.body,
+              });
+
+              if (res.ok) {
+                const data = await res.json() as any;
+                const bcastList = Array.isArray(data?.broadcasts)
+                  ? data.broadcasts
+                  : (Array.isArray(data?.data?.broadcasts) ? data.data.broadcasts : null);
+                if (Array.isArray(bcastList)) {
+                  this.saveBroadcasts(bcastList);
+                  broadcastsUpdatedFromBalance = true;
+                }
+
+                const liveBal = typeof data?.balance === 'number'
+                  ? data.balance
+                  : (typeof data?.data?.balance === 'number' ? data.data.balance : undefined);
+                if (typeof liveBal === 'number') {
+                  currentBalance = liveBal;
+                  gotBalance = true;
+                  break;
+                }
               }
-            }
-          } catch {}
+            } catch {}
+          }
+          if (gotBalance) break;
         }
       } catch (err) {
         console.warn('Live API balance check failed, falling back to local ledger:', err);
       }
+    }
+
+    if (!broadcastsUpdatedFromBalance) {
+      await this.fetchBroadcasts(config).catch(() => {});
     }
 
     return {
@@ -481,6 +606,8 @@ export class PPOBService {
       provisionStatus: prov.status,
       justApproved: prov.justApproved,
       merchantId: prov.merchantId,
+      broadcasts: this.getBroadcasts(),
+      lastWebhookEvent: this.getLastWebhookEvent(),
     };
   }
 
@@ -671,52 +798,147 @@ export class PPOBService {
   }
 
   /**
-   * Handle Incoming Webhook Callback from ipay.my.id
+   * Handle Incoming Webhook Callback from ipay.my.id (POS Command Center & Transaction Webhooks)
    */
-  static handleWebhook(payload: {
-    ref_id?: string;
-    client_ref_id?: string;
-    status: 'success' | 'failed' | 'pending' | string;
-    sn?: string;
-    buyer_sku_code?: string;
-    sku_code?: string;
-    sign?: string;
-  }) {
+  static async handleWebhook(payload: any): Promise<any> {
+    const event = String(payload?.event || payload?.type || '').toLowerCase().trim();
+
+    // 1. Health Check Ping (event: "ping")
+    if (event === 'ping') {
+      return { status: 'ok', success: true, message: 'POS Webhook Online' };
+    }
+
+    // 2. Auto-Sync Credentials (event: "credentials.synced" or provisioning push)
+    if (event === 'credentials.synced' || (payload?.api_key && payload?.merchant_id)) {
+      const parsed = this.extractProvisionPayload(payload);
+      if (parsed.credentials) {
+        await this.applyProvisionedCredentials(parsed.credentials);
+        this.recordWebhookEvent(
+          'credentials.synced',
+          `Kredensial Live ipay.my.id (${parsed.credentials.merchant_id}) berhasil disinkronkan otomatis!`
+        );
+        console.log(`[PPOB Webhook] Credentials auto-synced for merchant: ${parsed.credentials.merchant_id}`);
+        return {
+          status: 'ok',
+          success: true,
+          message: 'POS Credentials Synced',
+          merchant_id: parsed.credentials.merchant_id,
+        };
+      }
+    }
+
+    // 3. Instant Balance / Deposit Update (event: "balance.updated" | "deposit.approved")
+    if (event === 'balance.updated' || event === 'deposit.approved') {
+      const depRef = String(payload?.ref_id || payload?.deposit_ref_id || '').trim();
+      if (depRef) {
+        const dep = db.prepare('SELECT * FROM ppob_deposits WHERE ref_id = ?').get(depRef) as any;
+        if (dep && dep.status !== 'APPROVED') {
+          const creditAmount = Number(dep.amount_Requested || dep.amount_requested || payload?.amount || 0);
+          db.transaction(() => {
+            db.prepare("UPDATE ppob_deposits SET status = 'APPROVED', approved_at = CURRENT_TIMESTAMP WHERE id = ?").run(dep.id);
+            if (creditAmount > 0) {
+              db.prepare("UPDATE chart_of_accounts SET balance = balance + ? WHERE code = '1-1003'").run(creditAmount);
+            }
+          })();
+        }
+      }
+      const liveBal = await this.getBalance(true).catch(() => null);
+      const formattedBal = liveBal ? `Rp ${Number(liveBal.balance || 0).toLocaleString('id-ID')}` : '';
+      this.recordWebhookEvent(
+        event,
+        payload?.message || `Saldo Deposit PPOB telah diperbarui${formattedBal ? ` (${formattedBal})` : ''}!`,
+        { balance: liveBal?.balance }
+      );
+      return {
+        status: 'ok',
+        success: true,
+        message: 'POS Balance Updated',
+        balance: liveBal?.balance,
+      };
+    }
+
+    // 4. Instant POS Broadcast Push (event: "pos.broadcast")
+    if (event === 'pos.broadcast') {
+      if (Array.isArray(payload?.broadcasts)) {
+        this.saveBroadcasts(payload.broadcasts);
+      } else if (Array.isArray(payload?.data?.broadcasts)) {
+        this.saveBroadcasts(payload.data.broadcasts);
+      } else {
+        const bObj = payload?.broadcast || payload?.data || payload;
+        if (bObj && (bObj.title || bObj.message)) {
+          const current = this.getBroadcasts();
+          const newId = bObj.id ?? Date.now();
+          const filtered = current.filter(item => String(item.id) !== String(newId));
+          this.saveBroadcasts([
+            {
+              id: newId,
+              title: bObj.title || 'Pengumuman Server iPay',
+              message: bObj.message || '',
+              level: bObj.level || 'info',
+              created_at: bObj.created_at || new Date().toLocaleString('id-ID'),
+            },
+            ...filtered,
+          ]);
+        }
+        await this.fetchBroadcasts().catch(() => {});
+      }
+
+      const bTitle = payload?.title || payload?.broadcast?.title || payload?.data?.title || 'Pengumuman Baru dari Admin iPay';
+      const bMsg = payload?.message || payload?.broadcast?.message || payload?.data?.message || '';
+      this.recordWebhookEvent('pos.broadcast', bMsg ? `${bTitle}: ${bMsg}` : bTitle, {
+        level: payload?.level || payload?.broadcast?.level || 'info',
+      });
+      return {
+        status: 'ok',
+        success: true,
+        message: 'POS Broadcast Synced',
+        broadcasts: this.getBroadcasts(),
+      };
+    }
+
+    // 5. Transaction Status & SN Push (event: "transaction.updated" or standard webhook payload)
     const config = this.getConfig();
-    const refId = String(payload.ref_id || payload.client_ref_id || '').trim();
+    const refId = String(payload?.ref_id || payload?.client_ref_id || payload?.data?.ref_id || '').trim();
+
+    if (!refId) {
+      return { status: 'ok', success: true, message: 'POS Webhook Online' };
+    }
 
     console.log(`[PPOB Webhook] Received callback for ref_id: ${refId}, status: ${payload.status}`);
 
     // Verify webhook signature in live production mode if sign is provided
     if (this.isLiveConfigured(config) && payload.sign) {
       const expectedSign = this.generateSignature(config.merchantId, config.secretKey, refId);
-      if (payload.sign.toLowerCase() !== expectedSign.toLowerCase()) {
-        console.warn(`[PPOB Webhook] Signature verification failed for ref_id: ${refId}`);
-        return { success: false, message: 'Tanda tangan webhook tidak valid (Signature Mismatch)' };
+      if (String(payload.sign).toLowerCase() !== expectedSign.toLowerCase()) {
+        console.warn(`[PPOB Webhook] Signature mismatch for ref_id: ${refId} (expected ${expectedSign}, got ${payload.sign})`);
+        return { status: 'error', success: false, message: 'Tanda tangan webhook tidak valid (Signature Mismatch)' };
       }
     }
 
     const existingTx = db.prepare('SELECT * FROM ppob_transactions WHERE ref_id = ?').get(refId) as any;
     if (!existingTx) {
       console.warn(`[PPOB Webhook] Transaction with ref_id ${refId} not found`);
-      return { success: false, message: 'Transaction not found' };
+      return { status: 'ok', success: false, message: 'Transaction not found in this tenant' };
     }
 
-    const rawStat = String(payload.status || '').toLowerCase();
+    const rawStat = String(payload.status || payload.data?.status || '').toLowerCase();
     const newStatus: 'SUCCESS' | 'FAILED' | 'PENDING' =
       (rawStat === 'success' || rawStat === 'sukses')
         ? 'SUCCESS'
         : (rawStat === 'failed' || rawStat === 'gagal')
         ? 'FAILED'
         : 'PENDING';
-    const snToken = payload.sn || existingTx.sn_token;
+    const snToken = String(payload.sn || payload.data?.sn || existingTx.sn_token || '').trim();
+    const updatedBasePrice = Number(payload.price || payload.data?.price || 0) > 0
+      ? Number(payload.price || payload.data?.price)
+      : existingTx.base_price;
 
     // Update transaction
     db.prepare(`
       UPDATE ppob_transactions
-      SET status = ?, sn_token = ?, raw_response = ?, updated_at = CURRENT_TIMESTAMP
+      SET status = ?, sn_token = ?, base_price = ?, raw_response = ?, updated_at = CURRENT_TIMESTAMP
       WHERE ref_id = ?
-    `).run(newStatus, snToken, JSON.stringify(payload), refId);
+    `).run(newStatus, snToken, updatedBasePrice, JSON.stringify(payload), refId);
 
     // Update associated order_item if linked
     db.prepare(`
@@ -738,14 +960,20 @@ export class PPOBService {
         invoice_no: invoiceNo,
         product_name: existingTx.sku_code,
         selling_price: existingTx.selling_price,
-        cost_price: existingTx.base_price,
+        cost_price: updatedBasePrice,
         refund_method: 'CASH',
       });
 
       console.log(`[PPOB Webhook] Auto-reversal journal generated for failed transaction ${refId}`);
     }
 
-    return { success: true, ref_id: refId, status: newStatus };
+    this.recordWebhookEvent(
+      'transaction.updated',
+      `Transaksi PPOB ${existingTx.sku_code} (${existingTx.customer_no}) -> ${newStatus}${snToken ? ` | SN: ${snToken}` : ''}`,
+      { ref_id: refId, status: newStatus, sn: snToken }
+    );
+
+    return { status: 'ok', success: true, ref_id: refId, tx_status: newStatus, sn: snToken };
   }
 
   /**

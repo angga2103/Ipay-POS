@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { ShiftProvider } from './context/ShiftContext';
 import { CartProvider } from './context/CartContext';
-import { PPOBProvider } from './context/PPOBContext';
+import { PPOBProvider, POSBroadcastBanner } from './context/PPOBContext';
 import { Header } from './components/Header';
 import { Sidebar } from './components/Sidebar';
 import { BottomNav } from './components/BottomNav';
@@ -70,6 +70,7 @@ const MainLayout: React.FC = () => {
 
         {/* Active Page View */}
         <main className="flex-1 flex flex-col overflow-hidden relative">
+          <POSBroadcastBanner />
           <ErrorBoundary>
             {activeTab === 'pos' && <CashierPOS />}
             {activeTab === 'services' && <ServicePage />}
