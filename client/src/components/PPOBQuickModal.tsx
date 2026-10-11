@@ -17,7 +17,7 @@ type TabType = 'pulsa' | 'data' | 'pln' | 'ewallet' | 'games' | 'tagihan' | 'all
 
 export const PPOBQuickModal: React.FC<PPOBQuickModalProps> = ({ isOpen, onClose }) => {
   const { addPPOBItem } = useCart();
-  const { balance } = usePPOB();
+  const { balance, isLiveConfigured, provisionStatus, merchantId } = usePPOB();
 
   const [activeTab, setActiveTab] = useState<TabType>('pulsa');
   const [products, setProducts] = useState<PPOBProduct[]>([]);
@@ -401,16 +401,26 @@ export const PPOBQuickModal: React.FC<PPOBQuickModalProps> = ({ isOpen, onClose 
               <div className="flex items-center gap-2">
                 <h3 className="font-extrabold text-base tracking-tight text-white flex items-center gap-2">
                   Penjualan PPOB & Pulsa
-                  <span className="px-2 py-0.5 rounded-full bg-amber-400 text-slate-900 text-[10px] font-black uppercase tracking-wider">
-                    ipay.my.id LIVE
-                  </span>
+                  {isLiveConfigured ? (
+                    <span className="px-2 py-0.5 rounded-full bg-emerald-400 text-slate-950 text-[10px] font-black uppercase tracking-wider">
+                      🟢 ipay.my.id LIVE {merchantId ? `(${merchantId})` : ''}
+                    </span>
+                  ) : provisionStatus === 'PENDING' ? (
+                    <span className="px-2 py-0.5 rounded-full bg-amber-400 text-slate-950 text-[10px] font-black uppercase tracking-wider animate-pulse">
+                      ⏳ MENUNGGU APPROVAL TELEGRAM
+                    </span>
+                  ) : (
+                    <span className="px-2 py-0.5 rounded-full bg-amber-300 text-slate-900 text-[10px] font-black uppercase tracking-wider">
+                      🧪 MODE SIMULASI / SANDBOX
+                    </span>
+                  )}
                 </h3>
                 <span className="px-2 py-0.5 rounded-md bg-white/20 text-white font-mono text-xs font-bold">
                   F4
                 </span>
               </div>
               <p className="text-xs text-blue-100 flex items-center gap-1.5 mt-0.5">
-                <span>Saldo Live Kasir:</span>
+                <span>{isLiveConfigured ? 'Saldo Live Kasir:' : 'Saldo Simulasi Kasir:'}</span>
                 <span className="font-bold font-mono text-white bg-white/10 px-2 py-0.5 rounded">
                   Rp {balance.toLocaleString('id-ID')}
                 </span>
@@ -527,6 +537,36 @@ export const PPOBQuickModal: React.FC<PPOBQuickModalProps> = ({ isOpen, onClose 
 
         {/* Modal Body */}
         <div className="p-4 sm:p-5 overflow-y-auto space-y-4 flex-1">
+          {!isLiveConfigured && (
+            <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+              <div className="flex items-start gap-2 text-xs text-amber-900">
+                <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                <div>
+                  {provisionStatus === 'PENDING' ? (
+                    <span>
+                      <b>⏳ Menunggu Persetujuan Admin Telegram:</b> Permohonan jalur Live <b>ipay.my.id</b> sedang ditinjau. Sistem akan otomatis beralih ke Live begitu disetujui.
+                    </span>
+                  ) : (
+                    <span>
+                      <b>🧪 Mode Simulasi (Sandbox) Aktif:</b> Transaksi di sini hanya untuk latihan kasir dan belum memotong pulsa asli.
+                    </span>
+                  )}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  window.dispatchEvent(new CustomEvent('pos:navigate', { detail: 'ppob' }));
+                }}
+                className="px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-extrabold text-[11px] shrink-0 transition cursor-pointer flex items-center gap-1"
+              >
+                <Zap className="w-3.5 h-3.5" />
+                <span>{provisionStatus === 'PENDING' ? 'Cek Status Aktivasi' : 'Aktifkan Live 1-Klik'}</span>
+              </button>
+            </div>
+          )}
+
           {/* Section 1: Target Destination Number & Quick Inquiry */}
           <div className="bg-slate-50 p-3.5 rounded-2xl border border-slate-200/80 space-y-2.5">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">

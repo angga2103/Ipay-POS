@@ -33,6 +33,326 @@ export class PPOBService {
   }
 
   /**
+   * Check whether the current tenant has real Live ipay.my.id credentials configured
+   */
+  static isLiveConfigured(cfg?: PPOBConfig): boolean {
+    const config = cfg || this.getConfig();
+    if (config.mode !== 'live') return false;
+    if (!config.merchantId || config.merchantId === 'IPAY_MCH_00789' || config.merchantId === 'SANDBOX_USER') return false;
+    if (!config.apiKey || config.apiKey === 'DEMO_KEY_IPAY_89230198') return false;
+    return true;
+  }
+
+  /**
+   * Standard authentication headers compatible with ipay.my.id (GarudaTel)
+   */
+  static getAuthHeaders(cfg?: PPOBConfig): Record<string, string> {
+    const config = cfg || this.getConfig();
+    return {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+      'X-API-KEY': config.apiKey,
+      'Authorization': `Bearer ${config.apiKey}`,
+      'X-MERCHANT-ID': config.merchantId,
+      'X-SECRET-KEY': config.secretKey,
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) POS-IPAY/2.0',
+    };
+  }
+
+  /**
+   * Get 1-Click Auto-Provisioning Status for current tenant
+   */
+  static getProvisionStatus() {
+    const getSetting = (key: string, def = '') => {
+      const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value: string } | undefined;
+      return row ? row.value : def;
+    };
+
+    const config = this.getConfig();
+    const isLive = this.isLiveConfigured(config);
+    const rawStatus = (getSetting('ipay_provision_status', 'NONE') || 'NONE').toUpperCase();
+    const status = isLive ? 'APPROVED' : (['NONE', 'PENDING', 'APPROVED', 'REJECTED'].includes(rawStatus) ? rawStatus : 'NONE');
+    const requestId = getSetting('ipay_provision_request_id', '');
+    const rejectionReason = getSetting('ipay_provision_reason', '');
+    const justApproved = getSetting('ipay_provision_just_approved', '0') === '1';
+    const updatedAt = getSetting('ipay_provision_updated_at', '');
+    const storeName = getSetting('store_name', 'Toko Baru');
+    const storePhone = getSetting('store_phone', '');
+    const tenantId = getSetting('tenant_id', 'default');
+
+    const ownerRow = db.prepare("SELECT name, phone FROM users WHERE role = 'owner' LIMIT 1").get() as { name?: string; phone?: string } | undefined;
+    const ownerName = ownerRow?.name || 'Pemilik Toko';
+    const phone = storePhone || ownerRow?.phone || '';
+
+    return {
+      status: status as 'NONE' | 'PENDING' | 'APPROVED' | 'REJECTED',
+      requestId,
+      rejectionReason,
+      isLiveConfigured: isLive,
+      justApproved,
+      updatedAt,
+      storeName,
+      ownerName,
+      phone,
+      tenantId,
+      merchantId: isLive ? config.merchantId : '',
+      mode: config.mode,
+    };
+  }
+
+  /**
+   * Apply credentials received from ipay.my.id Auto-Provisioning (Telegram Approved)
+   */
+  static async applyProvisionedCredentials(credentials: {
+    merchant_id: string;
+    api_key: string;
+    secret_key: string;
+    mode?: string;
+  }) {
+    const upsert = db.prepare('INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)');
+    const tx = db.transaction(() => {
+      upsert.run('ipay_merchant_id', String(credentials.merchant_id).trim());
+      upsert.run('ipay_api_key', String(credentials.api_key).trim());
+      upsert.run('ipay_secret_key', String(credentials.secret_key || '').trim());
+      upsert.run('ipay_mode', 'live');
+      upsert.run('ipay_provision_status', 'APPROVED');
+      upsert.run('ipay_provision_reason', '');
+      upsert.run('ipay_provision_just_approved', '1');
+      upsert.run('ipay_provision_updated_at', new Date().toISOString());
+    });
+    tx();
+
+    // Trigger catalog sync and live balance check automatically
+    try {
+      await this.syncProductsFromIpay();
+    } catch (e) {
+      console.warn('[AutoProvision] Sync products warning:', e);
+    }
+    try {
+      await this.getBalance();
+    } catch (e) {
+      console.warn('[AutoProvision] Initial balance fetch warning:', e);
+    }
+  }
+
+  /**
+   * Dismiss the one-time "Just Approved" celebration banner
+   */
+  static dismissProvisionBanner() {
+    db.prepare("INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES ('ipay_provision_just_approved', '0', CURRENT_TIMESTAMP)").run();
+    return { success: true };
+  }
+
+  /**
+   * Submit 1-Click Auto-Provisioning Request to ipay.my.id (triggers Admin Telegram Bot)
+   */
+  static async requestAutoProvision(params: {
+    storeName?: string;
+    ownerName?: string;
+    phone?: string;
+    tenantId?: string;
+    publicPosUrl?: string;
+  }): Promise<{
+    success: boolean;
+    status: 'NONE' | 'PENDING' | 'APPROVED' | 'REJECTED';
+    requestId?: string;
+    message: string;
+    credentials?: any;
+  }> {
+    const config = this.getConfig();
+    const currentInfo = this.getProvisionStatus();
+
+    const storeName = (params.storeName || currentInfo.storeName || 'Toko POS iPay').trim();
+    const ownerName = (params.ownerName || currentInfo.ownerName || 'Pemilik Toko').trim();
+    const phone = (params.phone || currentInfo.phone || '').trim();
+    const tenantId = (params.tenantId || currentInfo.tenantId || 'default').trim();
+
+    if (!phone || phone.length < 8) {
+      return {
+        success: false,
+        status: currentInfo.status,
+        message: 'Nomor WhatsApp / HP aktif wajib diisi agar Admin iPay dapat memverifikasi pengajuan toko Anda.',
+      };
+    }
+
+    // Save storeName and phone to settings if updated
+    const upsert = db.prepare('INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)');
+    upsert.run('store_name', storeName);
+    upsert.run('store_phone', phone);
+    upsert.run('tenant_id', tenantId);
+
+    const posOrigin = (params.publicPosUrl || process.env.PUBLIC_POS_URL || 'https://ipaypos.my.id').replace(/\/+$/, '');
+    const payload = {
+      store_name: storeName,
+      owner_name: ownerName,
+      phone,
+      tenant_id: tenantId,
+      webhook_url: `${posOrigin}/api/ppob/webhook?tenant_id=${encodeURIComponent(tenantId)}`,
+      callback_url: `${posOrigin}/api/ppob/provision-callback?tenant_id=${encodeURIComponent(tenantId)}`,
+    };
+
+    const cleanBase = config.baseUrl.replace(/\/+$/, '');
+    const candidateUrls = [
+      `${cleanBase}/api/v1/merchant/provision/request`,
+      'http://127.0.0.1:5000/api/v1/merchant/provision/request',
+    ];
+
+    let lastErr = '';
+    for (const url of candidateUrls) {
+      try {
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) POS-IPAY/2.0',
+          },
+          body: JSON.stringify(payload),
+        });
+
+        const json = await res.json().catch(() => null) as any;
+        if (!res.ok || !json || (json.status !== true && json.status !== 'success')) {
+          lastErr = json?.message || `HTTP ${res.status} dari ${url}`;
+          continue;
+        }
+
+        const resData = json.data || json;
+        const reqId = String(resData.request_id || '');
+        const remoteStatus = String(resData.status || 'PENDING').toUpperCase();
+
+        if (remoteStatus === 'APPROVED' && resData.credentials?.api_key) {
+          if (reqId) upsert.run('ipay_provision_request_id', reqId);
+          await this.applyProvisionedCredentials(resData.credentials);
+          return {
+            success: true,
+            status: 'APPROVED',
+            requestId: reqId,
+            credentials: resData.credentials,
+            message: 'Akun ipay.my.id Anda telah disetujui dan langsung tersambung otomatis ke Kasir POS!',
+          };
+        }
+
+        // Save PENDING state
+        upsert.run('ipay_provision_status', 'PENDING');
+        if (reqId) upsert.run('ipay_provision_request_id', reqId);
+        upsert.run('ipay_provision_reason', '');
+        upsert.run('ipay_provision_updated_at', new Date().toISOString());
+
+        return {
+          success: true,
+          status: 'PENDING',
+          requestId: reqId,
+          message: json.message || 'Permohonan aktivasi berhasil dikirim ke Telegram Admin iPay. Menunggu persetujuan...',
+        };
+      } catch (err: any) {
+        lastErr = err.message || 'Network error';
+      }
+    }
+
+    return {
+      success: false,
+      status: currentInfo.status,
+      message: `Gagal menghubungi server ipay.my.id: ${lastErr}`,
+    };
+  }
+
+  /**
+   * Poll / Check Provisioning Approval Status from ipay.my.id
+   */
+  static async checkProvisionStatusFromIpay(tenantIdOverride?: string) {
+    const config = this.getConfig();
+    const current = this.getProvisionStatus();
+    const tId = tenantIdOverride || current.tenantId || 'default';
+    const reqId = current.requestId;
+
+    if (!reqId && current.status === 'NONE') {
+      return current;
+    }
+
+    const cleanBase = config.baseUrl.replace(/\/+$/, '');
+    const urlsToTry: string[] = [];
+    if (reqId) {
+      urlsToTry.push(`${cleanBase}/api/v1/merchant/provision/status/${encodeURIComponent(reqId)}`);
+      urlsToTry.push(`http://127.0.0.1:5000/api/v1/merchant/provision/status/${encodeURIComponent(reqId)}`);
+    }
+    urlsToTry.push(`${cleanBase}/api/v1/merchant/provision/status?tenant_id=${encodeURIComponent(tId)}`);
+    urlsToTry.push(`http://127.0.0.1:5000/api/v1/merchant/provision/status?tenant_id=${encodeURIComponent(tId)}`);
+
+    for (const url of urlsToTry) {
+      try {
+        const res = await fetch(url, {
+          method: 'GET',
+          headers: {
+            'Accept': 'application/json',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) POS-IPAY/2.0',
+          },
+        });
+        if (!res.ok) continue;
+
+        const json = await res.json().catch(() => null) as any;
+        if (!json || (json.status !== true && json.status !== 'success')) continue;
+
+        const data = json.data || json;
+        const remoteStatus = String(data.status || '').toUpperCase();
+        const upsert = db.prepare('INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)');
+
+        if (data.request_id) {
+          upsert.run('ipay_provision_request_id', String(data.request_id));
+        }
+
+        if (remoteStatus === 'APPROVED' && data.credentials?.api_key) {
+          await this.applyProvisionedCredentials(data.credentials);
+          return this.getProvisionStatus();
+        } else if (remoteStatus === 'REJECTED') {
+          upsert.run('ipay_provision_status', 'REJECTED');
+          upsert.run('ipay_provision_reason', String(data.rejection_reason || 'Permohonan ditolak oleh Admin iPay'));
+          upsert.run('ipay_provision_updated_at', new Date().toISOString());
+          return this.getProvisionStatus();
+        } else if (remoteStatus === 'PENDING') {
+          upsert.run('ipay_provision_status', 'PENDING');
+          return this.getProvisionStatus();
+        }
+      } catch {
+        // try next URL
+      }
+    }
+
+    return this.getProvisionStatus();
+  }
+
+  /**
+   * Handle Push Webhook Callback from ipay.my.id when Admin clicks Approve/Reject in Telegram
+   */
+  static async handleProvisionCallback(payload: any): Promise<{ status: boolean; message: string }> {
+    const data = payload?.data || payload || {};
+    const status = String(data.status || '').toUpperCase();
+    const reqId = String(data.request_id || '');
+    const reason = String(data.rejection_reason || '');
+    const credentials = data.credentials;
+
+    const upsert = db.prepare('INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)');
+    if (reqId) {
+      upsert.run('ipay_provision_request_id', reqId);
+    }
+
+    if (status === 'APPROVED' && credentials && credentials.api_key) {
+      await this.applyProvisionedCredentials(credentials);
+      console.log(`[PPOB Auto-Provision] Tenant activated automatically! Merchant ID: ${credentials.merchant_id}`);
+      return { status: true, message: 'Credentials provisioned and activated in POS' };
+    }
+
+    if (status === 'REJECTED') {
+      upsert.run('ipay_provision_status', 'REJECTED');
+      upsert.run('ipay_provision_reason', reason || 'Ditolak oleh Admin iPay');
+      upsert.run('ipay_provision_updated_at', new Date().toISOString());
+      console.log(`[PPOB Auto-Provision] Tenant provision rejected: ${reason}`);
+      return { status: true, message: 'Provision rejection recorded' };
+    }
+
+    return { status: true, message: 'Callback received' };
+  }
+
+  /**
    * Generate MD5 signature for ipay.my.id requests
    */
   static generateSignature(merchantId: string, secretKey: string, refId: string): string {
@@ -42,33 +362,44 @@ export class PPOBService {
   /**
    * Get Real-time PPOB Balance (Synchronized with COA Account 1-1003)
    */
-  static async getBalance(): Promise<{ balance: number; lowBalanceAlert: boolean; mode: string }> {
+  static async getBalance(): Promise<{
+    balance: number;
+    lowBalanceAlert: boolean;
+    mode: string;
+    isLiveConfigured: boolean;
+    provisionStatus: 'NONE' | 'PENDING' | 'APPROVED' | 'REJECTED';
+    justApproved: boolean;
+    merchantId: string;
+  }> {
     const config = this.getConfig();
+    const prov = this.getProvisionStatus();
 
     // Query balance from local ledger (Akun 1-1003)
     const acc = db.prepare("SELECT balance FROM chart_of_accounts WHERE code = '1-1003'").get() as { balance: number } | undefined;
     let currentBalance = acc ? acc.balance : 0;
 
-    if (config.mode === 'live') {
+    if (this.isLiveConfigured(config)) {
       try {
         // Live API call to ipay.my.id check-balance endpoint
         const sign = crypto.createHash('md5').update(`${config.merchantId}${config.secretKey}balance`).digest('hex');
-        const res = await fetch(`${config.baseUrl}/api/v1/profile/balance`, {
+        const cleanBase = config.baseUrl.replace(/\/+$/, '');
+        const res = await fetch(`${cleanBase}/api/v1/profile/balance`, {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-API-KEY': config.apiKey,
-          },
+          headers: this.getAuthHeaders(config),
           body: JSON.stringify({
             merchant_id: config.merchantId,
             signature: sign,
+            sign,
           }),
         });
 
         if (res.ok) {
           const data = await res.json() as any;
-          if (data && typeof data.balance === 'number') {
-            currentBalance = data.balance;
+          const liveBal = typeof data?.balance === 'number'
+            ? data.balance
+            : (typeof data?.data?.balance === 'number' ? data.data.balance : undefined);
+          if (typeof liveBal === 'number') {
+            currentBalance = liveBal;
           }
         }
       } catch (err) {
@@ -80,6 +411,10 @@ export class PPOBService {
       balance: currentBalance,
       lowBalanceAlert: currentBalance < config.lowBalanceThreshold,
       mode: config.mode,
+      isLiveConfigured: prov.isLiveConfigured,
+      provisionStatus: prov.status,
+      justApproved: prov.justApproved,
+      merchantId: prov.merchantId,
     };
   }
 
@@ -89,38 +424,39 @@ export class PPOBService {
   static async checkInquiry(sku: string, customerNo: string) {
     const config = this.getConfig();
 
-    if (config.mode === 'sandbox') {
+    if (!this.isLiveConfigured(config)) {
       return PPOBSimulator.simulateInquiry(sku, customerNo);
     }
 
     // Live API Inquiry
     const refId = `INQ-${Date.now()}`;
     const sign = this.generateSignature(config.merchantId, config.secretKey, refId);
+    const cleanBase = config.baseUrl.replace(/\/+$/, '');
 
-    const response = await fetch(`${config.baseUrl}/api/v1/transaction/inquiry`, {
+    const response = await fetch(`${cleanBase}/api/v1/transaction/inquiry`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-API-KEY': config.apiKey,
-      },
+      headers: this.getAuthHeaders(config),
       body: JSON.stringify({
         merchant_id: config.merchantId,
         buyer_sku_code: sku,
+        sku_code: sku,
         customer_no: customerNo,
         ref_id: refId,
+        client_ref_id: refId,
         sign,
       }),
     });
 
     const data = await response.json() as any;
+    const isOk = data.status === 'success' || data.status === true;
     return {
-      status: data.status === 'success' ? 'SUCCESS' : 'FAILED',
+      status: isOk ? 'SUCCESS' : 'FAILED',
       customer_no: customerNo,
       customer_name: data.customer_name || data.data?.customer_name || '',
-      amount: data.amount || data.data?.price || 0,
+      amount: data.amount || data.data?.price || data.data?.amount || 0,
       admin_fee: data.admin || data.data?.admin || 0,
-      total_amount: (data.amount || 0) + (data.admin || 0),
-      meter_no: data.meter_no || customerNo,
+      total_amount: (data.amount || data.data?.amount || 0) + (data.admin || data.data?.admin || 0),
+      meter_no: data.meter_no || data.data?.meter_no || customerNo,
       message: data.message || '',
     };
   }
@@ -146,7 +482,7 @@ export class PPOBService {
 
     // 2. Pre-check deposit balance
     let currentBalance = (db.prepare("SELECT balance FROM chart_of_accounts WHERE code = '1-1003'").get() as any)?.balance || 0;
-    if (currentBalance < prod.base_price && config.mode === 'live') {
+    if (currentBalance < prod.base_price && this.isLiveConfigured(config)) {
       try {
         const live = await this.getBalance();
         currentBalance = live.balance;
@@ -164,7 +500,7 @@ export class PPOBService {
       message: string;
     };
 
-    if (config.mode === 'sandbox') {
+    if (!this.isLiveConfigured(config)) {
       result = await PPOBSimulator.simulatePurchase({
         sku: params.sku,
         customer_no: params.customer_no,
@@ -175,146 +511,256 @@ export class PPOBService {
     } else {
       // Live API Call to ipay.my.id
       const sign = this.generateSignature(config.merchantId, config.secretKey, params.ref_id);
-      const res = await fetch(`${config.baseUrl}/api/v1/transaction/create`, {
+      const cleanBase = config.baseUrl.replace(/\/+$/, '');
+      const res = await fetch(`${cleanBase}/api/v1/transaction/create`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-API-KEY': config.apiKey,
-        },
+        headers: this.getAuthHeaders(config),
         body: JSON.stringify({
           merchant_id: config.merchantId,
+          secret_key: config.secretKey,
           buyer_sku_code: params.sku,
+          sku_code: params.sku,
           customer_no: params.customer_no,
           ref_id: params.ref_id,
+          client_ref_id: params.ref_id,
           sign,
         }),
       });
 
       const data = await res.json() as any;
-      const apiStatus = (data.data?.status || data.status || '').toLowerCase();
+      const apiStatus = String(data.data?.status || data.status || '').toLowerCase();
       const snFromApi = String(data.data?.sn || data.sn || '').trim();
       const msgFromApi = String(data.data?.message || data.message || '').trim();
       const isSuccess = apiStatus === 'success' || apiStatus === 'sukses';
       const isPending = apiStatus === 'pending' || apiStatus === 'waiting' || apiStatus === 'menunggu';
 
-        result = {
-          status: isSuccess ? 'SUCCESS' : (isPending ? 'PENDING' : 'FAILED'),
-          sn_token: snFromApi || (isSuccess ? msgFromApi : ''),
-          message: msgFromApi || (isSuccess ? 'Transaksi Sukses' : 'Gagal dari provider'),
-        };
+      result = {
+        status: isSuccess ? 'SUCCESS' : (isPending ? 'PENDING' : 'FAILED'),
+        sn_token: snFromApi || (isSuccess ? msgFromApi : ''),
+        message: msgFromApi || (isSuccess ? 'Transaksi Sukses' : 'Gagal dari provider'),
+      };
 
-        // Fast Auto-Check: Jika status awal dari Digiflazz masih PENDING, tunggu 2.5 detik lalu periksa status sekali lagi
-        if (result.status === 'PENDING') {
-          try {
-            await new Promise(r => setTimeout(r, 2500));
-            const checkRes = await fetch(`${config.baseUrl}/api/v1/transaction/status/${encodeURIComponent(params.ref_id)}`, {
+      // Fast Auto-Check: Jika status awal masih PENDING, tunggu 2.5 detik lalu periksa status sekali lagi
+      if (result.status === 'PENDING') {
+        try {
+          await new Promise(r => setTimeout(r, 2500));
+          let checkRes = await fetch(`${cleanBase}/api/v1/transaction/status`, {
+            method: 'POST',
+            headers: this.getAuthHeaders(config),
+            body: JSON.stringify({
+              ref_id: params.ref_id,
+              client_ref_id: params.ref_id,
+              merchant_id: config.merchantId,
+            }),
+          });
+          if (!checkRes.ok) {
+            checkRes = await fetch(`${cleanBase}/api/v1/transaction/status/${encodeURIComponent(params.ref_id)}`, {
               method: 'GET',
-              headers: {
-                'X-API-KEY': config.apiKey,
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) POS-IPAY/1.0',
-                'Accept': 'application/json',
-              },
+              headers: this.getAuthHeaders(config),
             });
-            if (checkRes.ok) {
-              const checkData = await checkRes.json() as any;
-              const cData = checkData.data || checkData;
-              const cStat = String(cData.status || '').toLowerCase();
-              const cSn = String(cData.sn || '').trim();
-              if (cStat === 'success' || cStat === 'sukses') {
-                result.status = 'SUCCESS';
-                result.sn_token = cSn || result.sn_token;
-                result.message = cData.message || 'Transaksi Sukses';
-              }
-            }
-          } catch {
-            // ignore quick check error
           }
+          if (checkRes.ok) {
+            const checkData = await checkRes.json() as any;
+            const cData = checkData.data || checkData;
+            const cStat = String(cData.status || '').toLowerCase();
+            const cSn = String(cData.sn || '').trim();
+            if (cStat === 'success' || cStat === 'sukses') {
+              result.status = 'SUCCESS';
+              result.sn_token = cSn || result.sn_token;
+              result.message = cData.message || 'Transaksi Sukses';
+            }
+          }
+        } catch {
+          // ignore quick check error
         }
       }
-
-      // 4. Record into `ppob_transactions`
-      db.prepare(`
-        INSERT INTO ppob_transactions (
-          order_id, ref_id, sku_code, customer_no, customer_name, base_price, selling_price, admin_fee, status, sn_token, raw_response
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
-      `).run(
-        params.order_id || null,
-        params.ref_id,
-        params.sku,
-        params.customer_no,
-        params.customer_name || '',
-        prod.base_price,
-        prod.selling_price,
-        result.status,
-        result.sn_token || null,
-        JSON.stringify(result)
-      );
-
-      return {
-        ...result,
-        sku: params.sku,
-        product_name: prod.product_name,
-        base_price: prod.base_price,
-        selling_price: prod.selling_price,
-        ref_id: params.ref_id,
-      };
     }
 
-    /**
-     * Handle Incoming Webhook Callback from ipay.my.id
-     */
-    static handleWebhook(payload: {
-      ref_id: string;
-      status: 'success' | 'failed' | 'pending';
-      sn?: string;
-      buyer_sku_code?: string;
-      sign?: string;
-    }) {
-      const config = this.getConfig();
+    // 4. Record into `ppob_transactions`
+    db.prepare(`
+      INSERT INTO ppob_transactions (
+        order_id, ref_id, sku_code, customer_no, customer_name, base_price, selling_price, admin_fee, status, sn_token, raw_response
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
+    `).run(
+      params.order_id || null,
+      params.ref_id,
+      params.sku,
+      params.customer_no,
+      params.customer_name || '',
+      prod.base_price,
+      prod.selling_price,
+      result.status,
+      result.sn_token || null,
+      JSON.stringify(result)
+    );
 
-      console.log(`[PPOB Webhook] Received callback for ref_id: ${payload.ref_id}, status: ${payload.status}`);
+    return {
+      ...result,
+      sku: params.sku,
+      product_name: prod.product_name,
+      base_price: prod.base_price,
+      selling_price: prod.selling_price,
+      ref_id: params.ref_id,
+    };
+  }
 
-      // Verify webhook signature in live production mode
-      if (config.mode === 'live') {
-        const expectedSign = this.generateSignature(config.merchantId, config.secretKey, payload.ref_id);
-        if (!payload.sign || payload.sign.toLowerCase() !== expectedSign.toLowerCase()) {
-          console.warn(`[PPOB Webhook] Signature verification failed for ref_id: ${payload.ref_id}`);
-          return { success: false, message: 'Tanda tangan webhook tidak valid (Signature Mismatch)' };
-        }
+  /**
+   * Handle Incoming Webhook Callback from ipay.my.id
+   */
+  static handleWebhook(payload: {
+    ref_id?: string;
+    client_ref_id?: string;
+    status: 'success' | 'failed' | 'pending' | string;
+    sn?: string;
+    buyer_sku_code?: string;
+    sku_code?: string;
+    sign?: string;
+  }) {
+    const config = this.getConfig();
+    const refId = String(payload.ref_id || payload.client_ref_id || '').trim();
+
+    console.log(`[PPOB Webhook] Received callback for ref_id: ${refId}, status: ${payload.status}`);
+
+    // Verify webhook signature in live production mode if sign is provided
+    if (this.isLiveConfigured(config) && payload.sign) {
+      const expectedSign = this.generateSignature(config.merchantId, config.secretKey, refId);
+      if (payload.sign.toLowerCase() !== expectedSign.toLowerCase()) {
+        console.warn(`[PPOB Webhook] Signature verification failed for ref_id: ${refId}`);
+        return { success: false, message: 'Tanda tangan webhook tidak valid (Signature Mismatch)' };
+      }
+    }
+
+    const existingTx = db.prepare('SELECT * FROM ppob_transactions WHERE ref_id = ?').get(refId) as any;
+    if (!existingTx) {
+      console.warn(`[PPOB Webhook] Transaction with ref_id ${refId} not found`);
+      return { success: false, message: 'Transaction not found' };
+    }
+
+    const rawStat = String(payload.status || '').toLowerCase();
+    const newStatus: 'SUCCESS' | 'FAILED' | 'PENDING' =
+      (rawStat === 'success' || rawStat === 'sukses')
+        ? 'SUCCESS'
+        : (rawStat === 'failed' || rawStat === 'gagal')
+        ? 'FAILED'
+        : 'PENDING';
+    const snToken = payload.sn || existingTx.sn_token;
+
+    // Update transaction
+    db.prepare(`
+      UPDATE ppob_transactions
+      SET status = ?, sn_token = ?, raw_response = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE ref_id = ?
+    `).run(newStatus, snToken, JSON.stringify(payload), refId);
+
+    // Update associated order_item if linked
+    db.prepare(`
+      UPDATE order_items
+      SET ppob_status = ?, ppob_sn_token = ?
+      WHERE ppob_ref_id = ?
+    `).run(newStatus, snToken, refId);
+
+    // If transaction previously was PENDING or SUCCESS and now becomes FAILED:
+    // Trigger Auto-Reversal in Accounting!
+    if (newStatus === 'FAILED' && existingTx.status !== 'FAILED') {
+      const order = existingTx.order_id
+        ? (db.prepare('SELECT invoice_no FROM orders WHERE id = ?').get(existingTx.order_id) as any)
+        : null;
+
+      const invoiceNo = order ? order.invoice_no : `PPOB-${refId}`;
+
+      AccountingService.recordPPOBReversal({
+        invoice_no: invoiceNo,
+        product_name: existingTx.sku_code,
+        selling_price: existingTx.selling_price,
+        cost_price: existingTx.base_price,
+        refund_method: 'CASH',
+      });
+
+      console.log(`[PPOB Webhook] Auto-reversal journal generated for failed transaction ${refId}`);
+    }
+
+    return { success: true, ref_id: refId, status: newStatus };
+  }
+
+  /**
+   * Cek & Sinkronkan status transaksi spesifik ke server ipay.my.id
+   */
+  static async syncTransactionStatus(refId: string): Promise<{
+    success: boolean;
+    status: 'SUCCESS' | 'PENDING' | 'FAILED';
+    sn_token?: string;
+    message?: string;
+  }> {
+    const config = this.getConfig();
+    const existingTx = db.prepare('SELECT * FROM ppob_transactions WHERE ref_id = ?').get(refId) as any;
+    if (!existingTx) {
+      return { success: false, status: 'FAILED', message: `Transaksi ${refId} tidak ditemukan di database POS` };
+    }
+
+    if (!this.isLiveConfigured(config)) {
+      return { success: true, status: existingTx.status, sn_token: existingTx.sn_token };
+    }
+
+    try {
+      const cleanBase = config.baseUrl.replace(/\/+$/, '');
+      let res = await fetch(`${cleanBase}/api/v1/transaction/status`, {
+        method: 'POST',
+        headers: this.getAuthHeaders(config),
+        body: JSON.stringify({
+          ref_id: refId,
+          client_ref_id: refId,
+          merchant_id: config.merchantId,
+        }),
+      });
+
+      if (!res.ok) {
+        res = await fetch(`${cleanBase}/api/v1/transaction/status/${encodeURIComponent(refId)}`, {
+          method: 'GET',
+          headers: this.getAuthHeaders(config),
+        });
       }
 
-      const existingTx = db.prepare('SELECT * FROM ppob_transactions WHERE ref_id = ?').get(payload.ref_id) as any;
-      if (!existingTx) {
-        console.warn(`[PPOB Webhook] Transaction with ref_id ${payload.ref_id} not found`);
-        return { success: false, message: 'Transaction not found' };
+      if (!res.ok) {
+        const errText = await res.text();
+        return { success: false, status: existingTx.status, message: `Server HTTP ${res.status}: ${errText}` };
       }
 
-      const newStatus = payload.status.toUpperCase() as 'SUCCESS' | 'FAILED' | 'PENDING';
-      const snToken = payload.sn || existingTx.sn_token;
+      const data = await res.json() as any;
+      const resData = data.data || data;
+      const rawStat = String(resData.status || '').toLowerCase();
+      const snFromApi = String(resData.sn || '').trim();
+      const msgFromApi = String(resData.message || '').trim();
 
-      // Update transaction
+      let newStatus: 'SUCCESS' | 'PENDING' | 'FAILED' = existingTx.status;
+      if (rawStat === 'success' || rawStat === 'sukses') {
+        newStatus = 'SUCCESS';
+      } else if (rawStat === 'failed' || rawStat === 'gagal') {
+        newStatus = 'FAILED';
+      } else if (rawStat === 'pending' || rawStat === 'waiting' || rawStat === 'menunggu') {
+        newStatus = 'PENDING';
+      }
+
+      const snToken = snFromApi || (newStatus === 'SUCCESS' ? (existingTx.sn_token && !existingTx.sn_token.includes('Pending') ? existingTx.sn_token : msgFromApi) : existingTx.sn_token);
+
+      // Update di database lokal POS
       db.prepare(`
         UPDATE ppob_transactions
         SET status = ?, sn_token = ?, raw_response = ?, updated_at = CURRENT_TIMESTAMP
         WHERE ref_id = ?
-      `).run(newStatus, snToken, JSON.stringify(payload), payload.ref_id);
+      `).run(newStatus, snToken, JSON.stringify(data), refId);
 
-      // Update associated order_item if linked
       db.prepare(`
         UPDATE order_items
         SET ppob_status = ?, ppob_sn_token = ?
         WHERE ppob_ref_id = ?
-      `).run(newStatus, snToken, payload.ref_id);
+      `).run(newStatus, snToken, refId);
 
-      // If transaction previously was PENDING or SUCCESS and now becomes FAILED:
-      // Trigger Auto-Reversal in Accounting!
+      // Jika sebelumnya bukan FAILED dan sekarang jadi FAILED, lakukan auto-reversal
       if (newStatus === 'FAILED' && existingTx.status !== 'FAILED') {
         const order = existingTx.order_id
           ? (db.prepare('SELECT invoice_no FROM orders WHERE id = ?').get(existingTx.order_id) as any)
           : null;
-
-        const invoiceNo = order ? order.invoice_no : `PPOB-${payload.ref_id}`;
-
+        const invoiceNo = order ? order.invoice_no : `PPOB-${refId}`;
         AccountingService.recordPPOBReversal({
           invoice_no: invoiceNo,
           product_name: existingTx.sku_code,
@@ -322,125 +768,41 @@ export class PPOBService {
           cost_price: existingTx.base_price,
           refund_method: 'CASH',
         });
-
-        console.log(`[PPOB Webhook] Auto-reversal journal generated for failed transaction ${payload.ref_id}`);
+        console.log(`[PPOB Sync] Auto-reversal journal generated for failed transaction ${refId}`);
       }
 
-      return { success: true, ref_id: payload.ref_id, status: newStatus };
+      console.log(`[PPOB Sync] Ref ID ${refId} status synced: ${existingTx.status} -> ${newStatus} (SN: ${snToken})`);
+      return {
+        success: true,
+        status: newStatus,
+        sn_token: snToken,
+        message: msgFromApi || `Status berhasil disinkronkan (${newStatus})`,
+      };
+    } catch (err: any) {
+      console.error(`[PPOB Sync] Gagal sync status ${refId}:`, err);
+      return { success: false, status: existingTx.status, message: err.message };
+    }
+  }
+
+  /**
+   * Sinkronkan semua transaksi yang masih PENDING dalam 24 jam terakhir
+   */
+  static async syncAllPendingTransactions(): Promise<{ synced: number; results: any[] }> {
+    const pendingList = db.prepare(`
+      SELECT ref_id FROM ppob_transactions 
+      WHERE status = 'PENDING'
+      ORDER BY id DESC
+      LIMIT 20
+    `).all() as { ref_id: string }[];
+
+    const results: any[] = [];
+    for (const item of pendingList) {
+      const res = await this.syncTransactionStatus(item.ref_id);
+      results.push({ ref_id: item.ref_id, ...res });
     }
 
-    /**
-     * Cek & Sinkronkan status transaksi spesifik ke server ipay.my.id
-     */
-    static async syncTransactionStatus(refId: string): Promise<{
-      success: boolean;
-      status: 'SUCCESS' | 'PENDING' | 'FAILED';
-      sn_token?: string;
-      message?: string;
-    }> {
-      const config = this.getConfig();
-      const existingTx = db.prepare('SELECT * FROM ppob_transactions WHERE ref_id = ?').get(refId) as any;
-      if (!existingTx) {
-        return { success: false, status: 'FAILED', message: `Transaksi ${refId} tidak ditemukan di database POS` };
-      }
-
-      if (config.mode === 'sandbox') {
-        return { success: true, status: existingTx.status, sn_token: existingTx.sn_token };
-      }
-
-      try {
-        const res = await fetch(`${config.baseUrl}/api/v1/transaction/status/${encodeURIComponent(refId)}`, {
-          method: 'GET',
-          headers: {
-            'X-API-KEY': config.apiKey,
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) POS-IPAY/1.0',
-            'Accept': 'application/json',
-          },
-        });
-
-        if (!res.ok) {
-          const errText = await res.text();
-          return { success: false, status: existingTx.status, message: `Server HTTP ${res.status}: ${errText}` };
-        }
-
-        const data = await res.json() as any;
-        const resData = data.data || data;
-        const rawStat = String(resData.status || '').toLowerCase();
-        const snFromApi = String(resData.sn || '').trim();
-        const msgFromApi = String(resData.message || '').trim();
-
-        let newStatus: 'SUCCESS' | 'PENDING' | 'FAILED' = existingTx.status;
-        if (rawStat === 'success' || rawStat === 'sukses') {
-          newStatus = 'SUCCESS';
-        } else if (rawStat === 'failed' || rawStat === 'gagal') {
-          newStatus = 'FAILED';
-        } else if (rawStat === 'pending' || rawStat === 'waiting' || rawStat === 'menunggu') {
-          newStatus = 'PENDING';
-        }
-
-        const snToken = snFromApi || (newStatus === 'SUCCESS' ? (existingTx.sn_token && !existingTx.sn_token.includes('Pending') ? existingTx.sn_token : msgFromApi) : existingTx.sn_token);
-
-        // Update di database lokal POS
-        db.prepare(`
-          UPDATE ppob_transactions
-          SET status = ?, sn_token = ?, raw_response = ?, updated_at = CURRENT_TIMESTAMP
-          WHERE ref_id = ?
-        `).run(newStatus, snToken, JSON.stringify(data), refId);
-
-        db.prepare(`
-          UPDATE order_items
-          SET ppob_status = ?, ppob_sn_token = ?
-          WHERE ppob_ref_id = ?
-        `).run(newStatus, snToken, refId);
-
-        // Jika sebelumnya bukan FAILED dan sekarang jadi FAILED, lakukan auto-reversal
-        if (newStatus === 'FAILED' && existingTx.status !== 'FAILED') {
-          const order = existingTx.order_id
-            ? (db.prepare('SELECT invoice_no FROM orders WHERE id = ?').get(existingTx.order_id) as any)
-            : null;
-          const invoiceNo = order ? order.invoice_no : `PPOB-${refId}`;
-          AccountingService.recordPPOBReversal({
-            invoice_no: invoiceNo,
-            product_name: existingTx.sku_code,
-            selling_price: existingTx.selling_price,
-            cost_price: existingTx.base_price,
-            refund_method: 'CASH',
-          });
-          console.log(`[PPOB Sync] Auto-reversal journal generated for failed transaction ${refId}`);
-        }
-
-        console.log(`[PPOB Sync] Ref ID ${refId} status synced: ${existingTx.status} -> ${newStatus} (SN: ${snToken})`);
-        return {
-          success: true,
-          status: newStatus,
-          sn_token: snToken,
-          message: msgFromApi || `Status berhasil disinkronkan (${newStatus})`,
-        };
-      } catch (err: any) {
-        console.error(`[PPOB Sync] Gagal sync status ${refId}:`, err);
-        return { success: false, status: existingTx.status, message: err.message };
-      }
-    }
-
-    /**
-     * Sinkronkan semua transaksi yang masih PENDING dalam 24 jam terakhir
-     */
-    static async syncAllPendingTransactions(): Promise<{ synced: number; results: any[] }> {
-      const pendingList = db.prepare(`
-        SELECT ref_id FROM ppob_transactions 
-        WHERE status = 'PENDING'
-        ORDER BY id DESC
-        LIMIT 20
-      `).all() as { ref_id: string }[];
-
-      const results: any[] = [];
-      for (const item of pendingList) {
-        const res = await this.syncTransactionStatus(item.ref_id);
-        results.push({ ref_id: item.ref_id, ...res });
-      }
-
-      return { synced: results.length, results };
-    }
+    return { synced: results.length, results };
+  }
 
   /**
    * Auto-Pricing Rules: Update selling prices based on markup rules
@@ -487,17 +849,23 @@ export class PPOBService {
       };
     }
 
+    if (!this.isLiveConfigured(config)) {
+      return {
+        success: false,
+        message: 'Kredensial Live ipay.my.id belum terpasang (masih menggunakan kunci demo). Silakan gunakan fitur "Aktivasi & Hubungkan Otomatis 1-Klik" terlebih dahulu.',
+      };
+    }
+
     try {
       const sign = crypto.createHash('md5').update(`${config.merchantId}${config.secretKey}balance`).digest('hex');
-      const res = await fetch(`${config.baseUrl}/api/v1/profile/balance`, {
+      const cleanBase = config.baseUrl.replace(/\/+$/, '');
+      const res = await fetch(`${cleanBase}/api/v1/profile/balance`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-API-KEY': config.apiKey,
-        },
+        headers: this.getAuthHeaders(config),
         body: JSON.stringify({
           merchant_id: config.merchantId,
           signature: sign,
+          sign,
         }),
       });
 
@@ -506,10 +874,11 @@ export class PPOBService {
       }
 
       const data = await res.json() as any;
+      const liveBal = typeof data?.balance === 'number' ? data.balance : (data?.data?.balance || 0);
       return {
         success: true,
-        message: 'Koneksi ke API ipay.my.id Berhasil!',
-        balance: data.balance || 0,
+        message: `Koneksi ke API ipay.my.id Berhasil! (Merchant: ${config.merchantId})`,
+        balance: liveBal,
       };
     } catch (err: any) {
       return { success: false, message: `Gagal menghubungi server ipay.my.id: ${err.message}` };
@@ -522,10 +891,10 @@ export class PPOBService {
   static async syncProductsFromIpay(): Promise<{ success: boolean; message: string; count: number }> {
     const config = this.getConfig();
 
-    if (config.mode === 'sandbox') {
+    if (!this.isLiveConfigured(config)) {
       return {
         success: false,
-        message: 'Aplikasi kasir masih dalam Mode Sandbox. Silakan alihkan Mode Integrasi ke "Live Production" di atas lalu Simpan Konfigurasi.',
+        message: 'Aplikasi kasir masih dalam Mode Simulasi (Sandbox) atau belum memiliki API Key Live. Silakan klik "Daftar & Hubungkan Otomatis 1-Klik" di atas.',
         count: 0,
       };
     }
@@ -534,9 +903,7 @@ export class PPOBService {
       const cleanUrl = config.baseUrl.replace(/\/+$/, '');
       const res = await fetch(`${cleanUrl}/api/v1/products`, {
         method: 'GET',
-        headers: {
-          'X-API-KEY': config.apiKey,
-        },
+        headers: this.getAuthHeaders(config),
       });
 
       if (!res.ok) {
@@ -548,7 +915,8 @@ export class PPOBService {
       }
 
       const json = await res.json() as any;
-      if (!json || json.status !== 'success' || !Array.isArray(json.data)) {
+      const isOk = json && (json.status === 'success' || json.status === true) && Array.isArray(json.data);
+      if (!isOk) {
         return {
           success: false,
           message: json?.message || 'Format data dari server ipay.my.id tidak valid',
@@ -588,14 +956,14 @@ export class PPOBService {
       let count = 0;
       const tx = db.transaction(() => {
         for (const p of products) {
-          const sku = String(p.sku || '').trim();
+          const sku = String(p.sku_code || p.sku || '').trim();
           if (!sku) continue;
 
-          const provider = String(p.brand || 'UMUM').toUpperCase().trim();
-          const category = String(p.category || 'PULSA').toUpperCase().trim();
+          const provider = String(p.brand || p.provider_code || 'UMUM').toUpperCase().trim();
+          const category = String(p.category || p.category_code || 'PULSA').toUpperCase().trim();
           const pType = (p.type || 'prepaid').toLowerCase().trim() === 'postpaid' ? 'postpaid' : 'prepaid';
-          const name = String(p.name || sku).trim();
-          const basePrice = parseFloat(p.price || p.base_price || 0);
+          const name = String(p.product_name || p.name || sku).trim();
+          const basePrice = parseFloat(p.price ?? p.base_price ?? 0);
 
           let sellingPrice = basePrice;
           if (mType === 'PERCENT') {
@@ -604,6 +972,10 @@ export class PPOBService {
             sellingPrice = basePrice + mVal;
           }
           sellingPrice = Math.ceil(sellingPrice / 100) * 100;
+
+          const isActive = p.status !== undefined
+            ? (String(p.status).toLowerCase() === 'normal' || p.status === true || p.status === 1)
+            : (p.is_active !== undefined ? Boolean(p.is_active) : true);
 
           upsert.run(
             provider,
@@ -616,7 +988,7 @@ export class PPOBService {
             mType,
             mVal,
             sellingPrice,
-            p.is_active ? 1 : 0
+            isActive ? 1 : 0
           );
           count++;
         }
@@ -652,8 +1024,10 @@ export class PPOBService {
     wa_target?: string;
     instructions?: string;
     channels?: any;
+    is_live_configured?: boolean;
   }> {
     const config = this.getConfig();
+    const isLive = this.isLiveConfigured(config);
 
     const defaultChannels = {
       dana_number: '081775700114',
@@ -665,40 +1039,45 @@ export class PPOBService {
       ],
     };
 
-    if (config.mode === 'sandbox') {
+    if (!isLive) {
       const balRes = await this.getBalance();
       const liveBal = balRes.balance;
       return {
         success: true,
+        is_live_configured: false,
         data: {
-          merchant_id: config.merchantId || 'SANDBOX_USER',
+          merchant_id: 'BELUM_TERHUBUNG',
           balance: liveBal,
           deposit_channels: defaultChannels,
         },
         live_balance: liveBal,
-        merchant_id: config.merchantId || 'SANDBOX_USER',
+        merchant_id: 'BELUM_TERHUBUNG',
         deposit_channels: defaultChannels,
-        message: 'Mode Sandbox (Offline/Simulasi): Saluran deposit lokal aktif',
+        message: 'Mode Sandbox (Simulasi): Hubungkan akun ipay.my.id terlebih dahulu sebelum melakukan deposit.',
       };
     }
 
     try {
-      const res = await fetch(`${config.baseUrl}/api/v1/profile/deposit/info`, {
+      const cleanBase = config.baseUrl.replace(/\/+$/, '');
+      let res = await fetch(`${cleanBase}/api/v1/deposit/channels`, {
         method: 'GET',
-        headers: {
-          'X-API-KEY': config.apiKey,
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) POS-IPAY/1.0',
-          'Accept': 'application/json',
-        },
+        headers: this.getAuthHeaders(config),
       });
+      if (!res.ok) {
+        res = await fetch(`${cleanBase}/api/v1/profile/deposit/info`, {
+          method: 'GET',
+          headers: this.getAuthHeaders(config),
+        });
+      }
 
       if (res.ok) {
         const json = await res.json() as any;
         const balRes = await this.getBalance();
-        const apiData = json.data || {};
-        const channelsList = apiData.channels || defaultChannels;
+        const apiData = json.data || json || {};
+        const channelsList = apiData.channels || apiData || defaultChannels;
         return {
           success: true,
+          is_live_configured: true,
           data: apiData,
           live_balance: typeof apiData.balance === 'number' ? apiData.balance : balRes.balance,
           merchant_id: apiData.merchant_id || config.merchantId,
@@ -716,6 +1095,7 @@ export class PPOBService {
     const liveBal = balRes.balance;
     return {
       success: true,
+      is_live_configured: true,
       data: {
         merchant_id: config.merchantId,
         balance: liveBal,
@@ -750,6 +1130,15 @@ export class PPOBService {
     message?: string;
   }> {
     const config = this.getConfig();
+
+    // Proteksi Keras: Cegah user baru membuat tiket deposit jika belum punya akun Live ipay.my.id!
+    if (!this.isLiveConfigured(config)) {
+      return {
+        success: false,
+        message: 'Akun Toko Anda belum terhubung ke jalur Live ipay.my.id (masih Mode Simulasi). Silakan klik tombol "Daftar & Hubungkan Akun ipay.my.id Otomatis (1-Klik)" di atas terlebih dahulu agar dana deposit masuk ke akun resmi toko Anda.',
+      };
+    }
+
     const baseAmount = Number(params.amount);
     if (!baseAmount || baseAmount < 10000) {
       return { success: false, message: 'Nominal deposit minimal Rp 10.000' };
@@ -807,47 +1196,52 @@ export class PPOBService {
         message: 'Tiket deposit berhasil dibuat. Silakan lakukan transfer dan konfirmasi ke admin iPay.',
       };
 
-      // Jika dalam mode LIVE, coba beri tahu server gateway ipay.my.id
-      if (config.mode === 'live') {
-        try {
-          const res = await fetch(`${config.baseUrl}/api/v1/profile/deposit/create`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'X-API-KEY': config.apiKey,
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) POS-IPAY/1.0',
-              'Accept': 'application/json',
-            },
-            body: JSON.stringify({
-              merchant_id: config.merchantId,
-              amount: totalAmount,
-              base_amount: baseAmount,
-              unique_code: uniqueCode,
-              channel: params.channel,
-              ref_id: refId,
-              notes: params.notes || `Deposit via Web POS IPAY (${config.merchantId})`,
-            }),
-          });
+      // Beri tahu server gateway ipay.my.id
+      try {
+        const cleanBase = config.baseUrl.replace(/\/+$/, '');
+        const bodyPayload = JSON.stringify({
+          merchant_id: config.merchantId,
+          amount: baseAmount,
+          total_amount: totalAmount,
+          base_amount: baseAmount,
+          unique_code: uniqueCode,
+          payment_method: params.channel,
+          channel: params.channel,
+          ref_id: refId,
+          notes: params.notes || `Deposit via Web POS IPAY (${config.merchantId})`,
+        });
 
-          if (res.ok) {
-            const json = await res.json() as any;
-            if (json && json.data) {
-              apiData = {
-                ...apiData,
-                ...json.data,
-                ref_id: json.data.ref_id || refId,
-                amount: json.data.amount || totalAmount,
-                base_amount: json.data.base_amount || baseAmount,
-                unique_code: json.data.unique_code || uniqueCode,
-                whatsapp_url: json.data.wa_confirm_url || whatsappUrl,
-              };
-            }
-          } else {
-            console.warn(`[PPOB Gateway] Remote create ticket returned status ${res.status}. Saving local ticket.`);
-          }
-        } catch (fetchErr: any) {
-          console.warn('[PPOB Gateway] Remote connection error:', fetchErr.message);
+        let res = await fetch(`${cleanBase}/api/v1/deposit/ticket`, {
+          method: 'POST',
+          headers: this.getAuthHeaders(config),
+          body: bodyPayload,
+        });
+        if (!res.ok) {
+          res = await fetch(`${cleanBase}/api/v1/profile/deposit/create`, {
+            method: 'POST',
+            headers: this.getAuthHeaders(config),
+            body: bodyPayload,
+          });
         }
+
+        if (res.ok) {
+          const json = await res.json() as any;
+          if (json && json.data) {
+            apiData = {
+              ...apiData,
+              ...json.data,
+              ref_id: json.data.ref_id || json.data.ticket_id || refId,
+              amount: json.data.total_transfer || json.data.amount || totalAmount,
+              base_amount: json.data.base_amount || baseAmount,
+              unique_code: json.data.unique_code || uniqueCode,
+              whatsapp_url: json.data.wa_confirm_url || whatsappUrl,
+            };
+          }
+        } else {
+          console.warn(`[PPOB Gateway] Remote create ticket returned status ${res.status}. Saving local ticket.`);
+        }
+      } catch (fetchErr: any) {
+        console.warn('[PPOB Gateway] Remote connection error:', fetchErr.message);
       }
 
       // Catat tiket deposit ke database lokal dengan status PENDING

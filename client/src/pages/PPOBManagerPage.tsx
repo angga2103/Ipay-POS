@@ -3,13 +3,26 @@ import {
   Zap, Key, ShieldCheck, RefreshCw, Sliders, CheckCircle2, CheckCircle, XCircle, X,
   AlertTriangle, Copy, Play, Loader2, ArrowRight, Download, Package,
   Wallet, CreditCard, History, Settings, Search, Check, ExternalLink,
-  Eye, EyeOff, MessageSquare, Phone, ArrowUpRight, Clock, Shield
+  Eye, EyeOff, MessageSquare, Phone, ArrowUpRight, Clock, Shield, Sparkles, Lock, Send
 } from 'lucide-react';
 import { usePPOB } from '../context/PPOBContext';
 import { useAuth } from '../context/AuthContext';
 
 export const PPOBManagerPage: React.FC = () => {
-  const { balance, refreshBalance, mode } = usePPOB();
+  const {
+    balance,
+    refreshBalance,
+    mode,
+    isLiveConfigured,
+    provisionStatus,
+    provisionRequestId,
+    provisionReason,
+    storeName: ctxStoreName,
+    ownerName: ctxOwnerName,
+    phone: ctxPhone,
+    requestAutoProvision,
+    pollProvisionStatus,
+  } = usePPOB();
   const { currentUser } = useAuth();
   
   const role = (currentUser?.role || 'cashier').toLowerCase();
@@ -18,6 +31,21 @@ export const PPOBManagerPage: React.FC = () => {
 
   // Navigation tab state ('history' | 'deposit' | 'config')
   const [activeTab, setActiveTab] = useState<'history' | 'deposit' | 'config'>('history');
+
+  // 1-Click Auto-Provisioning Form states
+  const [provStoreName, setProvStoreName] = useState('');
+  const [provOwnerName, setProvOwnerName] = useState('');
+  const [provPhone, setProvPhone] = useState('');
+  const [submittingProvision, setSubmittingProvision] = useState(false);
+  const [pollingProvision, setPollingProvision] = useState(false);
+  const [provisionFeedback, setProvisionFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  // Sync default values for 1-Click Auto-Provisioning form
+  useEffect(() => {
+    if (ctxStoreName && !provStoreName) setProvStoreName(ctxStoreName);
+    if (ctxOwnerName && !provOwnerName) setProvOwnerName(ctxOwnerName);
+    if (ctxPhone && !provPhone) setProvPhone(ctxPhone);
+  }, [ctxStoreName, ctxOwnerName, ctxPhone]);
 
   // API Settings state
   const [apiKey, setApiKey] = useState('');
@@ -93,7 +121,60 @@ export const PPOBManagerPage: React.FC = () => {
     fetchProductsCount();
     fetchDepositInfo();
     fetchDepositHistory();
-  }, []);
+  }, [isLiveConfigured]);
+
+  const handleRequestAutoProvision = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!provPhone.trim() || provPhone.trim().length < 8) {
+      setProvisionFeedback({
+        type: 'error',
+        text: 'Nomor WhatsApp / HP aktif wajib diisi agar Admin iPay dapat memverifikasi pengajuan toko Anda.',
+      });
+      return;
+    }
+    setSubmittingProvision(true);
+    setProvisionFeedback(null);
+    const res = await requestAutoProvision({
+      storeName: provStoreName.trim() || ctxStoreName,
+      ownerName: provOwnerName.trim() || ctxOwnerName,
+      phone: provPhone.trim(),
+    });
+    setSubmittingProvision(false);
+    setProvisionFeedback({
+      type: res.success ? 'success' : 'error',
+      text: res.message,
+    });
+    if (res.success && res.status === 'APPROVED') {
+      fetchSettings();
+      fetchProductsCount();
+      fetchDepositInfo();
+    }
+  };
+
+  const handleManualPollProvision = async () => {
+    setPollingProvision(true);
+    const data = await pollProvisionStatus(true);
+    setPollingProvision(false);
+    if (data?.status === 'APPROVED') {
+      setProvisionFeedback({
+        type: 'success',
+        text: '🎉 Selamat! Admin telah menyetujui pengajuan Anda. Kredensial Live & Katalog Produk telah aktif otomatis!',
+      });
+      fetchSettings();
+      fetchProductsCount();
+      fetchDepositInfo();
+    } else if (data?.status === 'REJECTED') {
+      setProvisionFeedback({
+        type: 'error',
+        text: `Pengajuan ditolak: ${data.rejectionReason || 'Data belum sesuai'}`,
+      });
+    } else {
+      setProvisionFeedback({
+        type: 'success',
+        text: 'Status masih MENUNGGU PERSETUJUAN Admin di Telegram. Sistem otomatis mengecek setiap 5 detik.',
+      });
+    }
+  };
 
   const fetchDepositHistory = async () => {
     setLoadingDepositHistory(true);
@@ -502,6 +583,226 @@ export const PPOBManagerPage: React.FC = () => {
           )}
         </div>
       </div>
+
+      {/* ========================================================================= */}
+      {/* 1-CLICK TELEGRAM AUTO-PROVISIONING ONBOARDING CARD (UNTUK TOKO BARU)      */}
+      {/* ========================================================================= */}
+      {!isLiveConfigured && canManageConfig && (
+        <div className="bg-white rounded-2xl border-2 border-blue-500/80 shadow-md overflow-hidden">
+          <div className="bg-linear-to-r from-blue-600 via-indigo-600 to-blue-700 px-5 py-3 text-white flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div className="flex items-center gap-2.5">
+              <div className="p-1.5 bg-amber-400 text-slate-950 rounded-xl shadow-xs">
+                <Sparkles className="w-4 h-4 fill-slate-950" />
+              </div>
+              <div>
+                <h2 className="text-sm font-black tracking-tight flex items-center gap-2">
+                  <span>Aktivasi & Sambungkan Akun PPOB ipay.my.id Otomatis (1-Klik)</span>
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-amber-300 text-slate-950 uppercase">
+                    Tanpa Copy-Paste API Key
+                  </span>
+                </h2>
+                <p className="text-[11px] text-blue-100">
+                  Saat ini kasir PPOB berjalan dalam <strong>Mode Simulasi (Sandbox)</strong>. Hubungkan ke server pusat <strong>ipay.my.id</strong> untuk mulai berjualan pulsa, token PLN, & top-up game sungguhan.
+                </p>
+              </div>
+            </div>
+            <span className={`px-2.5 py-1 rounded-full text-[10.5px] font-black uppercase shrink-0 ${
+              provisionStatus === 'PENDING'
+                ? 'bg-amber-300 text-slate-950 animate-pulse'
+                : provisionStatus === 'REJECTED'
+                ? 'bg-rose-500 text-white'
+                : 'bg-white/20 text-white'
+            }`}>
+              {provisionStatus === 'PENDING'
+                ? '⏳ Menunggu Persetujuan Admin'
+                : provisionStatus === 'REJECTED'
+                ? '❌ Perlu Pengajuan Ulang'
+                : '⚡ Belum Terhubung'}
+            </span>
+          </div>
+
+          <div className="p-5">
+            {provisionStatus === 'PENDING' ? (
+              <div className="space-y-4">
+                <div className="p-4 rounded-2xl bg-amber-50/90 border border-amber-300 flex flex-col md:flex-row md:items-center justify-between gap-4">
+                  <div className="space-y-1.5">
+                    <div className="flex items-center gap-2 text-amber-900 font-black text-sm">
+                      <Loader2 className="w-4 h-4 animate-spin text-amber-600" />
+                      <span>Menunggu Persetujuan Admin iPay di Bot Telegram...</span>
+                    </div>
+                    <p className="text-xs text-amber-800 leading-relaxed">
+                      Notifikasi permohonan toko <strong>{provStoreName || ctxStoreName}</strong> (No. WA: <strong className="font-mono">{provPhone || ctxPhone}</strong>) telah dikirim ke Bot Telegram Admin iPay. Begitu Admin menekan tombol <strong>[ ✅ TERIMA ]</strong>, API Key & 4.200+ produk PPOB akan langsung aktif otomatis di layar ini!
+                    </p>
+                    {provisionRequestId && (
+                      <div className="text-[11px] font-mono text-amber-900 bg-amber-100/80 px-2.5 py-1 rounded-lg inline-block">
+                        ID Tiket Aktivasi: <strong>{provisionRequestId}</strong> • Auto-Check Aktif (tiap 5 detik)
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={handleManualPollProvision}
+                      disabled={pollingProvision}
+                      className="px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs flex items-center gap-1.5 shadow-xs transition cursor-pointer disabled:opacity-50"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 ${pollingProvision ? 'animate-spin' : ''}`} />
+                      <span>{pollingProvision ? 'Memeriksa...' : 'Cek Status Sekarang'}</span>
+                    </button>
+
+                    <a
+                      href={`https://wa.me/6281775700114?text=${encodeURIComponent(
+                        `Halo Admin iPay, mohon setujui pengajuan aktivasi jalur PPOB otomatis untuk toko saya:\n\n` +
+                        `• *Nama Toko:* ${provStoreName || ctxStoreName}\n` +
+                        `• *Pemilik:* ${provOwnerName || ctxOwnerName}\n` +
+                        `• *No WA:* ${provPhone || ctxPhone}\n` +
+                        `• *ID Request:* ${provisionRequestId || '-'}\n\n` +
+                        `Terima kasih!`
+                      )}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center gap-1.5 shadow-xs transition cursor-pointer"
+                    >
+                      <MessageSquare className="w-3.5 h-3.5" />
+                      <span>Chat Admin WA</span>
+                    </a>
+                  </div>
+                </div>
+
+                {/* 3-Step Visual Progress Tracker */}
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-xs">
+                  <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200 flex items-center gap-2.5 text-emerald-900">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                    <div>
+                      <div className="font-bold">1. Permohonan Terkirim</div>
+                      <div className="text-[10.5px] text-emerald-700">Masuk ke Bot Telegram Admin</div>
+                    </div>
+                  </div>
+                  <div className="p-3 rounded-xl bg-amber-50 border border-amber-300 flex items-center gap-2.5 text-amber-900">
+                    <Loader2 className="w-4 h-4 text-amber-600 animate-spin shrink-0" />
+                    <div>
+                      <div className="font-bold">2. Verifikasi 1-Klik Admin</div>
+                      <div className="text-[10.5px] text-amber-700">Menunggu klik [ ✅ TERIMA ]</div>
+                    </div>
+                  </div>
+                  <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 flex items-center gap-2.5 text-slate-500">
+                    <Zap className="w-4 h-4 text-slate-400 shrink-0" />
+                    <div>
+                      <div className="font-bold">3. Injeksi API & Katalog</div>
+                      <div className="text-[10.5px] text-slate-400">Otomatis nyambung & siap jualan</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {provisionStatus === 'REJECTED' && (
+                  <div className="p-3.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs flex items-start gap-2.5">
+                    <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                    <div>
+                      <div className="font-extrabold">Pengajuan Sebelumnya Belum Disetujui Admin:</div>
+                      <p className="mt-0.5">{provisionReason || 'Nomor WhatsApp tidak aktif atau data toko belum lengkap. Silakan perbaiki data di bawah lalu ajukan kembali.'}</p>
+                    </div>
+                  </div>
+                )}
+
+                <form onSubmit={handleRequestAutoProvision} className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end">
+                  <div className="md:col-span-3">
+                    <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                      Nama Toko / Konter *
+                    </label>
+                    <input
+                      type="text"
+                      value={provStoreName}
+                      onChange={e => setProvStoreName(e.target.value)}
+                      placeholder="Contoh: Konter Berkah Cell"
+                      className="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs font-semibold focus:outline-blue-500"
+                      required
+                    />
+                  </div>
+
+                  <div className="md:col-span-3">
+                    <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                      Nama Pemilik (Owner) *
+                    </label>
+                    <input
+                      type="text"
+                      value={provOwnerName}
+                      onChange={e => setProvOwnerName(e.target.value)}
+                      placeholder="Nama lengkap Anda"
+                      className="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs font-semibold focus:outline-blue-500"
+                      required
+                    />
+                  </div>
+
+                  <div className="md:col-span-3">
+                    <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                      Nomor WhatsApp Aktif *
+                    </label>
+                    <input
+                      type="text"
+                      value={provPhone}
+                      onChange={e => setProvPhone(e.target.value)}
+                      placeholder="Contoh: 081234567890"
+                      className="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs font-mono font-bold focus:outline-blue-500"
+                      required
+                    />
+                  </div>
+
+                  <div className="md:col-span-3 flex flex-col gap-1.5">
+                    <button
+                      type="submit"
+                      disabled={submittingProvision}
+                      className="w-full py-2.5 px-3 rounded-xl bg-linear-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-extrabold text-xs shadow-md shadow-blue-600/20 flex items-center justify-center gap-1.5 transition cursor-pointer disabled:opacity-50"
+                    >
+                      {submittingProvision ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          <span>Mengirim ke Telegram...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Send className="w-3.5 h-3.5" />
+                          <span>Ajukan & Hubungkan 1-Klik</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </form>
+
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pt-2 border-t border-slate-100 text-[11px] text-slate-500">
+                  <span>
+                    💡 <strong>Cara Kerja:</strong> Klik tombol di atas → Bot Telegram Admin iPay menerima notifikasi → Admin klik <strong>[ ✅ TERIMA ]</strong> → Kasir Anda langsung aktif & tersinkronisasi otomatis!
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('config')}
+                    className="text-blue-600 hover:underline font-bold shrink-0 cursor-pointer"
+                  >
+                    Sudah punya API Key? Input Manual →
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {provisionFeedback && (
+              <div className={`mt-3 p-3 rounded-xl border text-xs font-bold flex items-center gap-2 ${
+                provisionFeedback.type === 'success'
+                  ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                  : 'bg-rose-50 border-rose-200 text-rose-800'
+              }`}>
+                {provisionFeedback.type === 'success' ? (
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                ) : (
+                  <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
+                )}
+                <span>{provisionFeedback.text}</span>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Navigation Tabs Bar */}
       <div className="flex items-center justify-between bg-white px-3 py-2 rounded-2xl border border-slate-200 shadow-xs">
@@ -972,12 +1273,46 @@ export const PPOBManagerPage: React.FC = () => {
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             {/* Left Box: Form Permohonan Deposit */}
             <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs space-y-4">
-              <div className="flex items-center gap-2 pb-3 border-b border-slate-100">
-                <CreditCard className="w-4 h-4 text-blue-600" />
-                <h2 className="font-extrabold text-sm text-slate-800">
-                  Form Top-Up / Isi Deposit Saldo
-                </h2>
+              <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+                <div className="flex items-center gap-2">
+                  <CreditCard className="w-4 h-4 text-blue-600" />
+                  <h2 className="font-extrabold text-sm text-slate-800">
+                    Form Top-Up / Isi Deposit Saldo
+                  </h2>
+                </div>
+                {!isLiveConfigured && (
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-rose-100 text-rose-700 border border-rose-200">
+                    🔒 Terkunci (Akun Belum Live)
+                  </span>
+                )}
               </div>
+
+              {!isLiveConfigured && (
+                <div className="p-3.5 rounded-xl bg-amber-50 border border-amber-300 text-amber-900 space-y-2">
+                  <div className="flex items-start gap-2.5">
+                    <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                    <div className="text-xs leading-relaxed">
+                      <span className="font-extrabold block text-amber-950 mb-0.5">
+                        Pengaman Dana Aktif: Jangan Transfer Sebelum Akun Live!
+                      </span>
+                      Saat ini toko Anda masih berada di <b>Mode Simulasi (Sandbox)</b> atau sedang menunggu persetujuan Admin di Bot Telegram. Pembuatan tiket deposit dikunci agar Anda tidak salah mentransfer uang asli ke akun simulasi.
+                    </div>
+                  </div>
+                  <div className="flex justify-end">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        window.scrollTo({ top: 0, behavior: 'smooth' });
+                        setShowProvisionForm(true);
+                      }}
+                      className="px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-extrabold text-[11px] transition cursor-pointer flex items-center gap-1"
+                    >
+                      <Zap className="w-3.5 h-3.5" />
+                      <span>Aktifkan Jalur Live 1-Klik di Atas</span>
+                    </button>
+                  </div>
+                </div>
+              )}
 
               <form onSubmit={handleCreateDeposit} className="space-y-4">
                 {/* Nominal Presets */}
@@ -1097,13 +1432,18 @@ export const PPOBManagerPage: React.FC = () => {
                 {/* Submit Button */}
                 <button
                   type="submit"
-                  disabled={submittingDeposit}
-                  className="w-full py-3 rounded-xl bg-linear-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white font-extrabold text-xs shadow-md shadow-emerald-600/20 transition flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+                  disabled={submittingDeposit || !isLiveConfigured}
+                  className="w-full py-3 rounded-xl bg-linear-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white font-extrabold text-xs shadow-md shadow-emerald-600/20 transition flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {submittingDeposit ? (
                     <>
                       <Loader2 className="w-4 h-4 animate-spin" />
                       <span>Memproses Tiket Deposit...</span>
+                    </>
+                  ) : !isLiveConfigured ? (
+                    <>
+                      <ShieldCheck className="w-4 h-4" />
+                      <span>Hubungkan Akun Live Terlebih Dahulu Untuk Deposit</span>
                     </>
                   ) : (
                     <>

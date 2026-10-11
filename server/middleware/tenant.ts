@@ -19,10 +19,13 @@ declare global {
  * and bind the database instance to the async execution context (AsyncLocalStorage).
  */
 export function tenantMiddleware(req: Request, res: Response, next: NextFunction) {
-  // Extract tenant ID from header or query param
+  // Extract tenant ID from header, query param, or webhook JSON body
   const rawHeader = req.headers['x-tenant-id'] as string | undefined;
   const rawQuery = (req.query.tenant || req.query.tenant_id) as string | undefined;
-  const rawTenant = rawHeader || rawQuery || 'default';
+  const rawBodyTenant = (req.path === '/ppob/provision-callback' || req.path === '/ppob/webhook')
+    ? (req.body?.tenant_id || req.body?.tenantId)
+    : undefined;
+  const rawTenant = rawHeader || rawQuery || rawBodyTenant || 'default';
 
   const tenantId = sanitizeTenantId(rawTenant);
 
@@ -49,6 +52,7 @@ export function tenantMiddleware(req: Request, res: Response, next: NextFunction
     path === '/tenant/info' || 
     path === '/tenant/list' || 
     path === '/ppob/webhook' || 
+    path === '/ppob/provision-callback' || 
     (path === '/users' && req.method === 'GET');
 
   const requiresAuth = !isPublicRoute && (process.env.NODE_ENV === 'production' || tenantId !== 'default');

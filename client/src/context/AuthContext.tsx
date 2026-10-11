@@ -43,6 +43,7 @@ interface AuthContextType {
     email?: string;
     password: string;
     pin: string;
+    autoProvisionPpob?: boolean;
   }) => Promise<{
     success: boolean;
     user?: User;
@@ -50,6 +51,7 @@ interface AuthContextType {
     tenantId?: string;
     storeName?: string;
     recoveryKey?: string;
+    provisionResult?: any;
     message?: string;
     error?: string;
   }>;
@@ -495,6 +497,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     email?: string;
     password: string;
     pin: string;
+    autoProvisionPpob?: boolean;
   }) => {
     try {
       const res = await fetch('/api/auth/register-store', {

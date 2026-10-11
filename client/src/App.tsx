@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { ShiftProvider } from './context/ShiftContext';
 import { CartProvider } from './context/CartContext';
@@ -25,6 +25,17 @@ const MainLayout: React.FC = () => {
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(() => {
     return localStorage.getItem('pos_sidebar_collapsed') === 'true';
   });
+
+  useEffect(() => {
+    const handleNavigate = (e: Event) => {
+      const customEvent = e as CustomEvent<string>;
+      if (customEvent.detail) {
+        setActiveTab(customEvent.detail);
+      }
+    };
+    window.addEventListener('pos:navigate', handleNavigate);
+    return () => window.removeEventListener('pos:navigate', handleNavigate);
+  }, []);
 
   const toggleSidebar = () => {
     setIsSidebarCollapsed(prev => {

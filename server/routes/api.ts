@@ -161,10 +161,10 @@ apiRouter.post('/auth/login-verify-pin', (req: Request, res: Response) => {
   }
 });
 
-// Pendaftaran Toko Baru (Skema 1 Mandiri: Password + 6-Digit PIN + Terbitkan Recovery Key)
+// Pendaftaran Toko Baru (Skema 1 Mandiri: Password + 6-Digit PIN + Terbitkan Recovery Key + Opsional Auto-Provisioning PPOB)
 apiRouter.post('/auth/register-store', async (req: Request, res: Response) => {
   try {
-    const { storeName, ownerName, username, phone, email, password, pin } = req.body;
+    const { storeName, ownerName, username, phone, email, password, pin, autoProvisionPpob } = req.body;
     if (!storeName || !ownerName || !password || !pin) {
       return res.status(400).json({ error: 'Nama toko, nama pemilik, kata sandi, dan 6-digit PIN wajib diisi' });
     }
@@ -218,6 +218,28 @@ apiRouter.post('/auth/register-store', async (req: Request, res: Response) => {
       ownerUser = newTenantDb.prepare("SELECT id FROM users WHERE role = 'owner' LIMIT 1").get() as any;
     }
 
+    // Jika user mencentang pengajuan otomatis jalur PPOB ipay.my.id & mengisi nomor HP
+    let provisionResult: any = null;
+    if (autoProvisionPpob !== false && phone && String(phone).trim().length >= 8) {
+      try {
+        provisionResult = await new Promise((resolve) => {
+          tenantContext.run({ tenantId: baseSlug, db: newTenantDb }, async () => {
+            try {
+              const r = await PPOBService.requestAutoProvision({
+                storeName: storeName.trim(),
+                ownerName: ownerName.trim(),
+                phone: String(phone).trim(),
+                tenantId: baseSlug,
+              });
+              resolve(r);
+            } catch (e) {
+              resolve(null);
+            }
+          });
+        });
+      } catch {}
+    }
+
     const token = createAuthToken({
       tenantId: baseSlug,
       userId: ownerUser.id,
@@ -231,6 +253,7 @@ apiRouter.post('/auth/register-store', async (req: Request, res: Response) => {
       tenantId: baseSlug,
       storeName: storeName.trim(),
       recoveryKey,
+      provisionResult,
       user: {
         id: ownerUser.id,
         username: cleanUser,
@@ -1688,7 +1711,7 @@ apiRouter.get('/inventory/valuation', (_req: Request, res: Response) => {
 });
 
 // ============================================================
-// 4. PPOB ENGINE (ipay.my.id)
+// 4. PPOB ENGINE (ipay.my.id) & 1-CLICK TELEGRAM AUTO-PROVISIONING
 // ============================================================
 apiRouter.get('/ppob/balance', async (_req: Request, res: Response) => {
   try {
@@ -1696,6 +1719,83 @@ apiRouter.get('/ppob/balance', async (_req: Request, res: Response) => {
     res.json(data);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// Cek Status Pengajuan 1-Click Auto-Provisioning (Mendukung ?poll=true untuk cek langsung ke ipay.my.id)
+apiRouter.get('/ppob/provision/status', async (req: Request, res: Response) => {
+  try {
+    const shouldPoll = req.query.poll === 'true' || req.query.poll === '1';
+    const current = PPOBService.getProvisionStatus();
+    if (shouldPoll || current.status === 'PENDING') {
+      const updated = await PPOBService.checkProvisionStatusFromIpay(req.tenantId || current.tenantId);
+      return res.json({ success: true, ...updated });
+    }
+    res.json({ success: true, ...current });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Kirim Permohonan 1-Click Auto-Provisioning ke Telegram Admin iPay
+apiRouter.post('/ppob/provision/request', async (req: Request, res: Response) => {
+  try {
+    const { storeName, ownerName, phone } = req.body || {};
+    const hostHeader = req.headers.host || 'ipaypos.my.id';
+    const protocol = (req.headers['x-forwarded-proto'] as string) || req.protocol || 'https';
+    const publicPosUrl = hostHeader.includes('localhost') || hostHeader.includes('127.0.0.1')
+      ? 'https://ipaypos.my.id'
+      : `${protocol}://${hostHeader}`;
+
+    const result = await PPOBService.requestAutoProvision({
+      storeName,
+      ownerName,
+      phone,
+      tenantId: req.tenantId || 'default',
+      publicPosUrl,
+    });
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Tutup Banner Perayaan "Akun PPOB Aktif"
+apiRouter.post('/ppob/provision/dismiss-banner', (_req: Request, res: Response) => {
+  try {
+    const result = PPOBService.dismissProvisionBanner();
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Endpoint Push Callback dari ipay.my.id saat Admin klik [TERIMA] atau [TOLAK] di Telegram
+apiRouter.post('/ppob/provision-callback', async (req: Request, res: Response) => {
+  try {
+    const rawTenantId = (req.query.tenant_id as string)
+      || req.body?.tenant_id
+      || req.body?.data?.tenant_id
+      || req.tenantId
+      || 'default';
+    const targetTenantId = sanitizeTenantId(String(rawTenantId));
+    const targetDb = getTenantDatabase(targetTenantId);
+
+    const result = await new Promise((resolve, reject) => {
+      tenantContext.run({ tenantId: targetTenantId, db: targetDb }, async () => {
+        try {
+          const r = await PPOBService.handleProvisionCallback(req.body);
+          resolve(r);
+        } catch (e) {
+          reject(e);
+        }
+      });
+    });
+
+    res.json(result);
+  } catch (err: any) {
+    console.error('[PPOB Provision Callback Error]:', err);
+    res.status(500).json({ status: false, message: err.message });
   }
 });
 
@@ -1750,8 +1850,14 @@ apiRouter.post('/ppob/purchase', async (req: Request, res: Response) => {
 
 apiRouter.post('/ppob/webhook', (req: Request, res: Response) => {
   try {
-    const result = PPOBService.handleWebhook(req.body);
-    res.json(result);
+    const rawTenantId = (req.query.tenant_id as string) || req.body?.tenant_id || req.tenantId || 'default';
+    const targetTenantId = sanitizeTenantId(String(rawTenantId));
+    const targetDb = getTenantDatabase(targetTenantId);
+
+    tenantContext.run({ tenantId: targetTenantId, db: targetDb }, () => {
+      const result = PPOBService.handleWebhook(req.body);
+      res.json(result);
+    });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

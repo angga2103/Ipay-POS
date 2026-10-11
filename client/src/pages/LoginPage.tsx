@@ -54,11 +54,13 @@ export const LoginPage: React.FC = () => {
   const [regPin, setRegPin] = useState('');
   const [regConfirmPin, setRegConfirmPin] = useState('');
   const [showRegPin, setShowRegPin] = useState(false);
+  const [regAutoProvisionPpob, setRegAutoProvisionPpob] = useState(true);
 
   // Register Success & Recovery Key Modal State
   const [showRegisterSuccessModal, setShowRegisterSuccessModal] = useState(false);
   const [registeredRecoveryKey, setRegisteredRecoveryKey] = useState('');
   const [registeredStoreName, setRegisteredStoreName] = useState('');
+  const [registeredProvisionResult, setRegisteredProvisionResult] = useState<any | null>(null);
   const [copiedRecoveryKey, setCopiedRecoveryKey] = useState(false);
   const [pendingRegisteredSession, setPendingRegisteredSession] = useState<{
     user: any;
@@ -156,6 +158,10 @@ export const LoginPage: React.FC = () => {
       setError('Semua kolom bertanda * wajib diisi');
       return;
     }
+    if (regAutoProvisionPpob && (!regPhone || regPhone.trim().length < 8)) {
+      setError('Harap isi Nomor HP / WhatsApp Anda untuk aktivasi otomatis jalur Pulsa & PPOB (ipay.my.id)');
+      return;
+    }
     if (regPassword.length < 6) {
       setError('Kata sandi minimal 6 karakter');
       return;
@@ -184,6 +190,7 @@ export const LoginPage: React.FC = () => {
       email: regEmail.trim() || undefined,
       password: regPassword,
       pin: regPin.trim(),
+      autoProvisionPpob: regAutoProvisionPpob,
     });
     setLoading(false);
 
@@ -200,6 +207,7 @@ export const LoginPage: React.FC = () => {
     });
     setRegisteredRecoveryKey(res.recoveryKey || '');
     setRegisteredStoreName(res.storeName || regStoreName);
+    setRegisteredProvisionResult(res.provisionResult || null);
     setShowRegisterSuccessModal(true);
   };
 
@@ -620,7 +628,7 @@ export const LoginPage: React.FC = () => {
 
                     <div>
                       <label className="block text-xs font-semibold text-slate-300 mb-1">
-                        No. HP / WhatsApp
+                        No. HP / WhatsApp {regAutoProvisionPpob && <span className="text-rose-400">*</span>}
                       </label>
                       <div className="relative">
                         <Phone className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
@@ -630,6 +638,7 @@ export const LoginPage: React.FC = () => {
                           onChange={e => setRegPhone(e.target.value)}
                           placeholder="081234567890"
                           className="w-full pl-10 pr-3 py-2 bg-slate-950/80 border border-slate-800 rounded-xl text-white text-xs focus:outline-hidden focus:border-blue-500 transition placeholder:text-slate-500"
+                          required={regAutoProvisionPpob}
                         />
                       </div>
                     </div>
@@ -725,9 +734,24 @@ export const LoginPage: React.FC = () => {
                     </div>
                   </div>
 
-                  <p className="text-[11px] text-slate-400 leading-tight">
-                    PIN 6-digit digunakan sebagai pengaman lapis kedua saat login dan otorisasi transaksi kasir.
-                  </p>
+                  {/* Checkbox 1-Click Auto-Provisioning PPOB ipay.my.id */}
+                  <label className="flex items-start gap-2.5 p-3 rounded-xl bg-blue-950/40 border border-blue-500/30 cursor-pointer hover:bg-blue-950/60 transition">
+                    <input
+                      type="checkbox"
+                      checked={regAutoProvisionPpob}
+                      onChange={e => setRegAutoProvisionPpob(e.target.checked)}
+                      className="mt-0.5 w-4 h-4 rounded accent-emerald-500 cursor-pointer"
+                    />
+                    <div className="text-[11px] leading-snug">
+                      <span className="font-bold text-blue-200 flex items-center gap-1">
+                        <Zap className="w-3.5 h-3.5 text-amber-400 fill-amber-400" />
+                        Sekalian ajukan aktivasi otomatis jalur Pulsa & PPOB (ipay.my.id)
+                      </span>
+                      <span className="text-slate-400 block mt-0.5">
+                        Kirim notifikasi 1-Klik ke Bot Telegram Admin iPay. Begitu disetujui, API Key Live langsung tersambung otomatis tanpa salin-tempel.
+                      </span>
+                    </div>
+                  </label>
 
                   <button
                     type="submit"
@@ -889,6 +913,28 @@ export const LoginPage: React.FC = () => {
                 </button>
               </div>
             </div>
+
+            {registeredProvisionResult && (
+              <div className={`p-3.5 rounded-2xl border text-xs space-y-1 mb-5 ${
+                registeredProvisionResult.status === 'APPROVED'
+                  ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-200'
+                  : 'bg-blue-500/15 border-blue-500/40 text-blue-200'
+              }`}>
+                <div className="font-bold flex items-center gap-1.5">
+                  <Zap className="w-4 h-4 text-amber-400 fill-amber-400 shrink-0" />
+                  <span>
+                    {registeredProvisionResult.status === 'APPROVED'
+                      ? '🎉 Jalur PPOB ipay.my.id Langsung Aktif (LIVE)!'
+                      : '⏳ Permohonan PPOB Terkirim ke Bot Telegram Admin'}
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-300 leading-relaxed">
+                  {registeredProvisionResult.status === 'APPROVED'
+                    ? 'Akun PPOB Anda sudah disetujui dan API Key Live telah dipasang otomatis.'
+                    : 'Notifikasi persetujuan telah dikirim ke Bot Telegram Admin iPay. Anda sudah bisa masuk ke kasir sekarang; begitu Admin menekan TERIMA, jalur PPOB toko Anda akan aktif otomatis!'}
+                </p>
+              </div>
+            )}
 
             <button
               type="button"
