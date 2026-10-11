@@ -101,6 +101,57 @@ export class PPOBService {
   }
 
   /**
+   * Normalize response payload from ipay.my.id (supports root provision_status & flat data credentials)
+   */
+  static extractProvisionPayload(json: any): {
+    remoteStatus: 'NONE' | 'PENDING' | 'APPROVED' | 'REJECTED';
+    requestId: string;
+    rejectionReason: string;
+    credentials: { merchant_id: string; api_key: string; secret_key: string; mode?: string } | null;
+  } {
+    const data = (json && typeof json.data === 'object' && json.data) ? json.data : (json || {});
+    const rawProvStatus =
+      json?.provision_status ||
+      data?.provision_status ||
+      (typeof data?.status === 'string' && !['success', 'true', 'ok'].includes(data.status.toLowerCase()) ? data.status : '') ||
+      (typeof json?.status === 'string' && !['success', 'true', 'ok'].includes(json.status.toLowerCase()) ? json.status : '');
+
+    let remoteStatus: 'NONE' | 'PENDING' | 'APPROVED' | 'REJECTED' = 'NONE';
+    const upperStat = String(rawProvStatus || '').toUpperCase().trim();
+    if (upperStat === 'APPROVED' || upperStat === 'ACTIVE' || upperStat === 'LIVE') {
+      remoteStatus = 'APPROVED';
+    } else if (upperStat === 'PENDING' || upperStat === 'WAITING') {
+      remoteStatus = 'PENDING';
+    } else if (upperStat === 'REJECTED' || upperStat === 'DENIED') {
+      remoteStatus = 'REJECTED';
+    }
+
+    const requestId = String(json?.request_id || data?.request_id || '').trim();
+    const rejectionReason = String(
+      json?.rejection_reason || data?.rejection_reason || json?.reason || data?.reason || ''
+    ).trim();
+
+    const rawCreds = data?.credentials?.api_key
+      ? data.credentials
+      : (data?.api_key ? data : (json?.credentials?.api_key ? json.credentials : (json?.api_key ? json : null)));
+
+    const credentials = (rawCreds && rawCreds.api_key && rawCreds.merchant_id)
+      ? {
+          merchant_id: String(rawCreds.merchant_id).trim(),
+          api_key: String(rawCreds.api_key).trim(),
+          secret_key: String(rawCreds.secret_key || '').trim(),
+          mode: String(rawCreds.mode || 'LIVE').trim(),
+        }
+      : null;
+
+    if (credentials && remoteStatus === 'NONE') {
+      remoteStatus = 'APPROVED';
+    }
+
+    return { remoteStatus, requestId, rejectionReason, credentials };
+  }
+
+  /**
    * Apply credentials received from ipay.my.id Auto-Provisioning (Telegram Approved)
    */
   static async applyProvisionedCredentials(credentials: {
@@ -129,7 +180,7 @@ export class PPOBService {
       console.warn('[AutoProvision] Sync products warning:', e);
     }
     try {
-      await this.getBalance();
+      await this.getBalance(true);
     } catch (e) {
       console.warn('[AutoProvision] Initial balance fetch warning:', e);
     }
@@ -193,8 +244,8 @@ export class PPOBService {
 
     const cleanBase = config.baseUrl.replace(/\/+$/, '');
     const candidateUrls = [
-      `${cleanBase}/api/v1/merchant/provision/request`,
       'http://127.0.0.1:5000/api/v1/merchant/provision/request',
+      `${cleanBase}/api/v1/merchant/provision/request`,
     ];
 
     let lastErr = '';
@@ -216,18 +267,17 @@ export class PPOBService {
           continue;
         }
 
-        const resData = json.data || json;
-        const reqId = String(resData.request_id || '');
-        const remoteStatus = String(resData.status || 'PENDING').toUpperCase();
+        const parsed = this.extractProvisionPayload(json);
+        const reqId = parsed.requestId;
 
-        if (remoteStatus === 'APPROVED' && resData.credentials?.api_key) {
+        if (parsed.remoteStatus === 'APPROVED' && parsed.credentials) {
           if (reqId) upsert.run('ipay_provision_request_id', reqId);
-          await this.applyProvisionedCredentials(resData.credentials);
+          await this.applyProvisionedCredentials(parsed.credentials);
           return {
             success: true,
             status: 'APPROVED',
             requestId: reqId,
-            credentials: resData.credentials,
+            credentials: parsed.credentials,
             message: 'Akun ipay.my.id Anda telah disetujui dan langsung tersambung otomatis ke Kasir POS!',
           };
         }
@@ -265,18 +315,22 @@ export class PPOBService {
     const tId = tenantIdOverride || current.tenantId || 'default';
     const reqId = current.requestId;
 
-    if (!reqId && current.status === 'NONE') {
+    if (current.isLiveConfigured) {
+      return current;
+    }
+
+    if (!reqId && current.status === 'NONE' && tId === 'default') {
       return current;
     }
 
     const cleanBase = config.baseUrl.replace(/\/+$/, '');
     const urlsToTry: string[] = [];
     if (reqId) {
-      urlsToTry.push(`${cleanBase}/api/v1/merchant/provision/status/${encodeURIComponent(reqId)}`);
       urlsToTry.push(`http://127.0.0.1:5000/api/v1/merchant/provision/status/${encodeURIComponent(reqId)}`);
+      urlsToTry.push(`${cleanBase}/api/v1/merchant/provision/status/${encodeURIComponent(reqId)}`);
     }
-    urlsToTry.push(`${cleanBase}/api/v1/merchant/provision/status?tenant_id=${encodeURIComponent(tId)}`);
     urlsToTry.push(`http://127.0.0.1:5000/api/v1/merchant/provision/status?tenant_id=${encodeURIComponent(tId)}`);
+    urlsToTry.push(`${cleanBase}/api/v1/merchant/provision/status?tenant_id=${encodeURIComponent(tId)}`);
 
     for (const url of urlsToTry) {
       try {
@@ -292,23 +346,22 @@ export class PPOBService {
         const json = await res.json().catch(() => null) as any;
         if (!json || (json.status !== true && json.status !== 'success')) continue;
 
-        const data = json.data || json;
-        const remoteStatus = String(data.status || '').toUpperCase();
+        const parsed = this.extractProvisionPayload(json);
         const upsert = db.prepare('INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)');
 
-        if (data.request_id) {
-          upsert.run('ipay_provision_request_id', String(data.request_id));
+        if (parsed.requestId) {
+          upsert.run('ipay_provision_request_id', parsed.requestId);
         }
 
-        if (remoteStatus === 'APPROVED' && data.credentials?.api_key) {
-          await this.applyProvisionedCredentials(data.credentials);
+        if (parsed.remoteStatus === 'APPROVED' && parsed.credentials) {
+          await this.applyProvisionedCredentials(parsed.credentials);
           return this.getProvisionStatus();
-        } else if (remoteStatus === 'REJECTED') {
+        } else if (parsed.remoteStatus === 'REJECTED') {
           upsert.run('ipay_provision_status', 'REJECTED');
-          upsert.run('ipay_provision_reason', String(data.rejection_reason || 'Permohonan ditolak oleh Admin iPay'));
+          upsert.run('ipay_provision_reason', parsed.rejectionReason || 'Permohonan ditolak oleh Admin iPay');
           upsert.run('ipay_provision_updated_at', new Date().toISOString());
           return this.getProvisionStatus();
-        } else if (remoteStatus === 'PENDING') {
+        } else if (parsed.remoteStatus === 'PENDING') {
           upsert.run('ipay_provision_status', 'PENDING');
           return this.getProvisionStatus();
         }
@@ -324,28 +377,24 @@ export class PPOBService {
    * Handle Push Webhook Callback from ipay.my.id when Admin clicks Approve/Reject in Telegram
    */
   static async handleProvisionCallback(payload: any): Promise<{ status: boolean; message: string }> {
-    const data = payload?.data || payload || {};
-    const status = String(data.status || '').toUpperCase();
-    const reqId = String(data.request_id || '');
-    const reason = String(data.rejection_reason || '');
-    const credentials = data.credentials;
+    const parsed = this.extractProvisionPayload(payload);
 
     const upsert = db.prepare('INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)');
-    if (reqId) {
-      upsert.run('ipay_provision_request_id', reqId);
+    if (parsed.requestId) {
+      upsert.run('ipay_provision_request_id', parsed.requestId);
     }
 
-    if (status === 'APPROVED' && credentials && credentials.api_key) {
-      await this.applyProvisionedCredentials(credentials);
-      console.log(`[PPOB Auto-Provision] Tenant activated automatically! Merchant ID: ${credentials.merchant_id}`);
+    if (parsed.remoteStatus === 'APPROVED' && parsed.credentials) {
+      await this.applyProvisionedCredentials(parsed.credentials);
+      console.log(`[PPOB Auto-Provision] Tenant activated automatically! Merchant ID: ${parsed.credentials.merchant_id}`);
       return { status: true, message: 'Credentials provisioned and activated in POS' };
     }
 
-    if (status === 'REJECTED') {
+    if (parsed.remoteStatus === 'REJECTED') {
       upsert.run('ipay_provision_status', 'REJECTED');
-      upsert.run('ipay_provision_reason', reason || 'Ditolak oleh Admin iPay');
+      upsert.run('ipay_provision_reason', parsed.rejectionReason || 'Ditolak oleh Admin iPay');
       upsert.run('ipay_provision_updated_at', new Date().toISOString());
-      console.log(`[PPOB Auto-Provision] Tenant provision rejected: ${reason}`);
+      console.log(`[PPOB Auto-Provision] Tenant provision rejected: ${parsed.rejectionReason}`);
       return { status: true, message: 'Provision rejection recorded' };
     }
 
@@ -362,7 +411,7 @@ export class PPOBService {
   /**
    * Get Real-time PPOB Balance (Synchronized with COA Account 1-1003)
    */
-  static async getBalance(): Promise<{
+  static async getBalance(skipProvisionCheck = false): Promise<{
     balance: number;
     lowBalanceAlert: boolean;
     mode: string;
@@ -371,8 +420,16 @@ export class PPOBService {
     justApproved: boolean;
     merchantId: string;
   }> {
-    const config = this.getConfig();
-    const prov = this.getProvisionStatus();
+    let config = this.getConfig();
+    let prov = this.getProvisionStatus();
+
+    // Auto-heal: if tenant is not yet Live and (status is PENDING or non-default tenant), check upstream ipay.my.id status!
+    if (!skipProvisionCheck && !prov.isLiveConfigured && (prov.status === 'PENDING' || prov.tenantId !== 'default')) {
+      try {
+        prov = await this.checkProvisionStatusFromIpay(prov.tenantId);
+        config = this.getConfig();
+      } catch {}
+    }
 
     // Query balance from local ledger (Akun 1-1003)
     const acc = db.prepare("SELECT balance FROM chart_of_accounts WHERE code = '1-1003'").get() as { balance: number } | undefined;
@@ -383,24 +440,33 @@ export class PPOBService {
         // Live API call to ipay.my.id check-balance endpoint
         const sign = crypto.createHash('md5').update(`${config.merchantId}${config.secretKey}balance`).digest('hex');
         const cleanBase = config.baseUrl.replace(/\/+$/, '');
-        const res = await fetch(`${cleanBase}/api/v1/profile/balance`, {
-          method: 'POST',
-          headers: this.getAuthHeaders(config),
-          body: JSON.stringify({
-            merchant_id: config.merchantId,
-            signature: sign,
-            sign,
-          }),
-        });
+        const balanceUrls = [
+          'http://127.0.0.1:5000/api/v1/profile/balance',
+          `${cleanBase}/api/v1/profile/balance`,
+        ];
+        for (const bUrl of balanceUrls) {
+          try {
+            const res = await fetch(bUrl, {
+              method: 'POST',
+              headers: this.getAuthHeaders(config),
+              body: JSON.stringify({
+                merchant_id: config.merchantId,
+                signature: sign,
+                sign,
+              }),
+            });
 
-        if (res.ok) {
-          const data = await res.json() as any;
-          const liveBal = typeof data?.balance === 'number'
-            ? data.balance
-            : (typeof data?.data?.balance === 'number' ? data.data.balance : undefined);
-          if (typeof liveBal === 'number') {
-            currentBalance = liveBal;
-          }
+            if (res.ok) {
+              const data = await res.json() as any;
+              const liveBal = typeof data?.balance === 'number'
+                ? data.balance
+                : (typeof data?.data?.balance === 'number' ? data.data.balance : undefined);
+              if (typeof liveBal === 'number') {
+                currentBalance = liveBal;
+                break;
+              }
+            }
+          } catch {}
         }
       } catch (err) {
         console.warn('Live API balance check failed, falling back to local ledger:', err);
@@ -901,25 +967,37 @@ export class PPOBService {
 
     try {
       const cleanUrl = config.baseUrl.replace(/\/+$/, '');
-      const res = await fetch(`${cleanUrl}/api/v1/products`, {
-        method: 'GET',
-        headers: this.getAuthHeaders(config),
-      });
-
-      if (!res.ok) {
-        return {
-          success: false,
-          message: `Gagal menghubungi API ipay.my.id: HTTP ${res.status} ${res.statusText}. Pastikan Base URL & API Key sudah benar.`,
-          count: 0,
-        };
+      const prodUrls = [
+        'http://127.0.0.1:5000/api/v1/products',
+        `${cleanUrl}/api/v1/products`,
+      ];
+      let json: any = null;
+      let lastHttpErr = '';
+      for (const pUrl of prodUrls) {
+        try {
+          const res = await fetch(pUrl, {
+            method: 'GET',
+            headers: this.getAuthHeaders(config),
+          });
+          if (!res.ok) {
+            lastHttpErr = `HTTP ${res.status} ${res.statusText}`;
+            continue;
+          }
+          const parsed = await res.json().catch(() => null) as any;
+          if (parsed && (parsed.status === 'success' || parsed.status === true) && Array.isArray(parsed.data)) {
+            json = parsed;
+            break;
+          }
+          lastHttpErr = parsed?.message || 'Format data tidak valid';
+        } catch (e: any) {
+          lastHttpErr = e.message || 'Network error';
+        }
       }
 
-      const json = await res.json() as any;
-      const isOk = json && (json.status === 'success' || json.status === true) && Array.isArray(json.data);
-      if (!isOk) {
+      if (!json || !Array.isArray(json.data)) {
         return {
           success: false,
-          message: json?.message || 'Format data dari server ipay.my.id tidak valid',
+          message: `Gagal menghubungi API ipay.my.id: ${lastHttpErr}. Pastikan Base URL & API Key sudah benar.`,
           count: 0,
         };
       }

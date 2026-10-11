@@ -1727,7 +1727,7 @@ apiRouter.get('/ppob/provision/status', async (req: Request, res: Response) => {
   try {
     const shouldPoll = req.query.poll === 'true' || req.query.poll === '1';
     const current = PPOBService.getProvisionStatus();
-    if (shouldPoll || current.status === 'PENDING') {
+    if (!current.isLiveConfigured && (shouldPoll || current.status === 'PENDING' || (req.tenantId && req.tenantId !== 'default'))) {
       const updated = await PPOBService.checkProvisionStatusFromIpay(req.tenantId || current.tenantId);
       return res.json({ success: true, ...updated });
     }
@@ -1799,24 +1799,71 @@ apiRouter.post('/ppob/provision-callback', async (req: Request, res: Response) =
   }
 });
 
-apiRouter.get('/ppob/products', (req: Request, res: Response) => {
-  const { category, provider } = req.query;
-  let query = 'SELECT * FROM ppob_products WHERE is_active = 1';
-  const params: any[] = [];
+apiRouter.get('/ppob/products', async (req: Request, res: Response) => {
+  try {
+    const { category, provider } = req.query;
 
-  if (category) {
-    query += ' AND category_code = ?';
-    params.push(category);
+    // Jika tabel ppob_products tenant baru masih kosong (0 produk), sinkronkan dari ipay.my.id atau salin dari defaultDb
+    const countRow = db.prepare('SELECT COUNT(*) as c FROM ppob_products').get() as { c: number } | undefined;
+    if (!countRow || countRow.c === 0) {
+      if (PPOBService.isLiveConfigured()) {
+        await PPOBService.syncProductsFromIpay().catch(() => {});
+      }
+      const afterSync = db.prepare('SELECT COUNT(*) as c FROM ppob_products').get() as { c: number } | undefined;
+      if (!afterSync || afterSync.c === 0) {
+        try {
+          const masterDb = getTenantDatabase('default');
+          const masterProds = masterDb.prepare('SELECT * FROM ppob_products').all() as any[];
+          if (masterProds.length > 0) {
+            const ins = db.prepare(`
+              INSERT OR IGNORE INTO ppob_products (
+                provider_code, category_code, type, sku_code, product_name, description,
+                base_price, markup_type, markup_value, selling_price, is_active
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `);
+            db.transaction(() => {
+              for (const p of masterProds) {
+                ins.run(
+                  p.provider_code,
+                  p.category_code,
+                  p.type,
+                  p.sku_code,
+                  p.product_name,
+                  p.description || '',
+                  p.base_price,
+                  p.markup_type,
+                  p.markup_value,
+                  p.selling_price,
+                  p.is_active
+                );
+              }
+            })();
+          }
+        } catch (seedErr) {
+          console.warn('[PPOB Products] Fallback master catalog copy warning:', seedErr);
+        }
+      }
+    }
+
+    let query = 'SELECT * FROM ppob_products WHERE is_active = 1';
+    const params: any[] = [];
+
+    if (category) {
+      query += ' AND category_code = ?';
+      params.push(category);
+    }
+
+    if (provider) {
+      query += ' AND provider_code = ?';
+      params.push(provider);
+    }
+
+    query += ' ORDER BY provider_code ASC, base_price ASC';
+    const products = db.prepare(query).all(...params);
+    res.json(products);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
   }
-
-  if (provider) {
-    query += ' AND provider_code = ?';
-    params.push(provider);
-  }
-
-  query += ' ORDER BY provider_code ASC, base_price ASC';
-  const products = db.prepare(query).all(...params);
-  res.json(products);
 });
 
 apiRouter.post('/ppob/inquiry', async (req: Request, res: Response) => {

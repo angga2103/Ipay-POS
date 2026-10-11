@@ -17,7 +17,7 @@ type TabType = 'pulsa' | 'data' | 'pln' | 'ewallet' | 'games' | 'tagihan' | 'all
 
 export const PPOBQuickModal: React.FC<PPOBQuickModalProps> = ({ isOpen, onClose }) => {
   const { addPPOBItem } = useCart();
-  const { balance, isLiveConfigured, provisionStatus, merchantId } = usePPOB();
+  const { balance, isLiveConfigured, provisionStatus, merchantId, pollProvisionStatus } = usePPOB();
 
   const [activeTab, setActiveTab] = useState<TabType>('pulsa');
   const [products, setProducts] = useState<PPOBProduct[]>([]);
@@ -53,10 +53,13 @@ export const PPOBQuickModal: React.FC<PPOBQuickModalProps> = ({ isOpen, onClose 
 
   useEffect(() => {
     if (!isOpen) return;
+    if (!isLiveConfigured) {
+      pollProvisionStatus(true);
+    }
     loadProducts();
     // Auto-focus target input
     setTimeout(() => inputRef.current?.focus(), 100);
-  }, [isOpen]);
+  }, [isOpen, isLiveConfigured]);
 
   // Reset selections when tab changes
   useEffect(() => {

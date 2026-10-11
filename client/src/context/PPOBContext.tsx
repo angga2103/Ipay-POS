@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { CheckCircle2, Sparkles, X } from 'lucide-react';
 import { playSuccessChime } from '../utils/audio';
+import { useAuth } from './AuthContext';
 
 export type ProvisionStatus = 'NONE' | 'PENDING' | 'APPROVED' | 'REJECTED';
 
@@ -32,6 +33,7 @@ interface PPOBContextType {
 const PPOBContext = createContext<PPOBContextType | undefined>(undefined);
 
 export const PPOBProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const { currentUser, tenantId } = useAuth();
   const [balance, setBalance] = useState<number>(0);
   const [lowBalanceAlert, setLowBalanceAlert] = useState<boolean>(false);
   const [mode, setMode] = useState<string>('sandbox');
@@ -140,21 +142,24 @@ export const PPOBProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   useEffect(() => {
+    if (!currentUser) return;
     refreshBalance();
-    pollProvisionStatus(false);
+    pollProvisionStatus(true);
     // Auto-poll balance every 30 seconds
     const interval = setInterval(refreshBalance, 30000);
     return () => clearInterval(interval);
-  }, [refreshBalance, pollProvisionStatus]);
+  }, [currentUser, tenantId, refreshBalance, pollProvisionStatus]);
 
-  // Fast 5-second auto-polling while waiting for Admin Telegram approval (PENDING)
+  // Fast 5-second auto-polling while waiting for Admin Telegram approval (PENDING or unconfigured store)
   useEffect(() => {
-    if (provisionStatus !== 'PENDING') return;
+    if (!currentUser) return;
+    if (isLiveConfigured && provisionStatus !== 'PENDING') return;
+    if (provisionStatus !== 'PENDING' && tenantId === 'default') return;
     const fastTimer = setInterval(() => {
       pollProvisionStatus(true);
     }, 5000);
     return () => clearInterval(fastTimer);
-  }, [provisionStatus, pollProvisionStatus]);
+  }, [currentUser, tenantId, isLiveConfigured, provisionStatus, pollProvisionStatus]);
 
   return (
     <PPOBContext.Provider
