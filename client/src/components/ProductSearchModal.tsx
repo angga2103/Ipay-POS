@@ -10,7 +10,7 @@ interface ProductSearchModalProps {
 }
 
 export const ProductSearchModal: React.FC<ProductSearchModalProps> = ({ isOpen, onClose, onSelectProduct }) => {
-  const { addItem } = useCart();
+  const { items, addItem } = useCart();
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<Product[]>([]);
   const [loading, setLoading] = useState(false);
@@ -21,7 +21,6 @@ export const ProductSearchModal: React.FC<ProductSearchModalProps> = ({ isOpen, 
     } else {
       addItem(prod, unitName);
     }
-    onClose();
   };
 
   useEffect(() => {

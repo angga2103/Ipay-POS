@@ -36,8 +36,11 @@ export const CashierPOS: React.FC = () => {
   const [products, setProducts] = useState<Product[]>([]);
   const [categories, setCategories] = useState<Array<{ id: number; name: string }>>([]);
   const [selectedCategory, setSelectedCategory] = useState<number | 'ALL'>('ALL');
-  const [viewMode, setViewMode] = useState<'hybrid' | 'touch_grid' | 'table_only'>('hybrid');
+  const [catalogSearch, setCatalogSearch] = useState('');
+  const [catalogLayout, setCatalogLayout] = useState<'grid' | 'list'>('grid');
   const [mobileActiveTab, setMobileActiveTab] = useState<'cart' | 'catalog'>('cart');
+  const [mobileCartPeekOpen, setMobileCartPeekOpen] = useState(false);
+  const [lastHighlightedProductId, setLastHighlightedProductId] = useState<number | null>(null);
 
   // Modals state
   const [isPPOBOpen, setIsPPOBOpen] = useState(false);
@@ -57,6 +60,15 @@ export const CashierPOS: React.FC = () => {
   const [pendingIMEIProduct, setPendingIMEIProduct] = useState<{ product: Product; unitName?: string } | null>(null);
 
   const barcodeInputRef = useRef<HTMLInputElement>(null);
+  const catalogSearchInputRef = useRef<HTMLInputElement>(null);
+
+  const focusCatalogSearch = () => {
+    setMobileActiveTab('catalog');
+    setTimeout(() => {
+      catalogSearchInputRef.current?.focus();
+      catalogSearchInputRef.current?.select();
+    }, 50);
+  };
 
   // Load products & categories for quick touch grid
   useEffect(() => {
@@ -87,9 +99,10 @@ export const CashierPOS: React.FC = () => {
       switch (e.key) {
         case 'F1':
           barcodeInputRef.current?.focus();
+          barcodeInputRef.current?.select();
           break;
         case 'F2':
-          setIsSearchOpen(true);
+          focusCatalogSearch();
           break;
         case 'F4':
           setIsPPOBOpen(true);
@@ -117,25 +130,34 @@ export const CashierPOS: React.FC = () => {
           setIsReceiptOpen(false);
           setIsDiscountOpen(false);
           setIsIMEIOpen(false);
-          barcodeInputRef.current?.focus();
+          if (catalogSearch) {
+            setCatalogSearch('');
+          } else {
+            barcodeInputRef.current?.focus();
+          }
           break;
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [items.length]);
+  }, [items.length, catalogSearch]);
 
   // Central handler to add product (with IMEI interception if required)
   const handleProductSelect = (prod: Product, unitName?: string) => {
     playScanBeep();
+    const chosenUnit = unitName || prod.base_uom;
     if (prod.requires_imei === 1) {
-      setPendingIMEIProduct({ product: prod, unitName });
+      setPendingIMEIProduct({ product: prod, unitName: chosenUnit });
       setIsIMEIOpen(true);
     } else {
-      addItem(prod, unitName);
-      setScanMessage({ text: `+ ${prod.name} ditambahkan`, type: 'success' });
-      setTimeout(() => setScanMessage(null), 2500);
+      addItem(prod, chosenUnit);
+      setLastHighlightedProductId(prod.id);
+      setScanMessage({ text: `+1 ${prod.name} (${chosenUnit})`, type: 'success' });
+      setTimeout(() => {
+        setScanMessage(null);
+        setLastHighlightedProductId(prev => (prev === prod.id ? null : prev));
+      }, 2000);
     }
   };
 
@@ -143,8 +165,12 @@ export const CashierPOS: React.FC = () => {
     if (pendingIMEIProduct) {
       playScanBeep();
       addItem(pendingIMEIProduct.product, pendingIMEIProduct.unitName, imeiSn);
+      setLastHighlightedProductId(pendingIMEIProduct.product.id);
       setScanMessage({ text: `+ ${pendingIMEIProduct.product.name} (IMEI terdaftar)`, type: 'success' });
-      setTimeout(() => setScanMessage(null), 2500);
+      setTimeout(() => {
+        setScanMessage(null);
+        setLastHighlightedProductId(null);
+      }, 2500);
       setPendingIMEIProduct(null);
       setIsIMEIOpen(false);
     }
@@ -199,10 +225,17 @@ export const CashierPOS: React.FC = () => {
     setIsReceiptOpen(true);
   };
 
-  // Filtered products for Touch Grid
+  // Filtered products for Inline Catalog (by Category AND Instant Search Query)
   const filteredProducts = products.filter(p => {
-    if (selectedCategory === 'ALL') return true;
-    return p.category_id === selectedCategory;
+    const matchesCategory = selectedCategory === 'ALL' || p.category_id === selectedCategory;
+    if (!matchesCategory) return false;
+    const q = catalogSearch.trim().toLowerCase();
+    if (!q) return true;
+    const matchName = p.name?.toLowerCase().includes(q);
+    const matchSku = p.sku?.toLowerCase().includes(q);
+    const matchBarcode = p.barcode?.toLowerCase().includes(q);
+    const matchUnitBarcode = p.units?.some(u => u.barcode?.toLowerCase().includes(q));
+    return matchName || matchSku || matchBarcode || matchUnitBarcode;
   });
 
   return (
@@ -225,7 +258,7 @@ export const CashierPOS: React.FC = () => {
               type="submit"
               className="absolute right-1.5 top-1.5 px-2 py-1 bg-blue-600 text-white font-bold text-xs rounded-lg hover:bg-blue-700 transition cursor-pointer"
             >
-              Cari
+              Scan
             </button>
           </div>
 
@@ -242,8 +275,8 @@ export const CashierPOS: React.FC = () => {
 
           {/* Quick Notification pill */}
           {scanMessage && (
-            <div className={`hidden sm:block px-2.5 py-1.5 rounded-lg text-xs font-bold animate-fade-in truncate max-w-[180px] ${
-              scanMessage.type === 'success' ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'
+            <div className={`hidden sm:block px-2.5 py-1.5 rounded-lg text-xs font-bold animate-fade-in truncate max-w-[200px] ${
+              scanMessage.type === 'success' ? 'bg-emerald-100 text-emerald-800 border border-emerald-300' : 'bg-rose-100 text-rose-800 border border-rose-300'
             }`}>
               {scanMessage.text}
             </div>
@@ -256,15 +289,6 @@ export const CashierPOS: React.FC = () => {
           <div className="flex lg:hidden bg-slate-100 p-0.5 rounded-xl border border-slate-200">
             <button
               type="button"
-              onClick={() => setMobileActiveTab('cart')}
-              className={`px-2.5 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${
-                mobileActiveTab === 'cart' ? 'bg-white text-blue-700 shadow-xs' : 'text-slate-500'
-              }`}
-            >
-              Keranjang ({itemCount})
-            </button>
-            <button
-              type="button"
               onClick={() => setMobileActiveTab('catalog')}
               className={`px-2.5 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${
                 mobileActiveTab === 'catalog' ? 'bg-white text-blue-700 shadow-xs' : 'text-slate-500'
@@ -272,20 +296,30 @@ export const CashierPOS: React.FC = () => {
             >
               Katalog
             </button>
+            <button
+              type="button"
+              onClick={() => setMobileActiveTab('cart')}
+              className={`px-2.5 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${
+                mobileActiveTab === 'cart' ? 'bg-white text-blue-700 shadow-xs' : 'text-slate-500'
+              }`}
+            >
+              Keranjang ({itemCount})
+            </button>
           </div>
 
           <button
-            onClick={() => setIsSearchOpen(true)}
-            className="px-2.5 py-1.5 rounded-xl border border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-700 text-xs font-bold flex items-center gap-1.5 transition cursor-pointer whitespace-nowrap min-h-[36px]"
+            onClick={focusCatalogSearch}
+            className="px-2.5 py-1.5 rounded-xl border border-blue-200 bg-blue-50/60 hover:bg-blue-100 text-blue-700 text-xs font-bold flex items-center gap-1.5 transition cursor-pointer whitespace-nowrap min-h-[36px]"
+            title="Fokus ke pencarian katalog produk di sebelah kiri (Tanpa menutup keranjang)"
           >
             <Search className="w-3.5 h-3.5 text-blue-600" />
-            <span className="hidden sm:inline">Katalog</span>
+            <span className="hidden sm:inline">Cari Katalog</span>
             <span className="kbd-shortcut hidden md:inline">F2</span>
           </button>
 
           <button
             onClick={() => setIsPPOBOpen(true)}
-            className="px-2.5 py-1.5 rounded-xl border border-blue-200 bg-blue-50/80 hover:bg-blue-100 text-blue-800 text-xs font-bold flex items-center gap-1.5 transition cursor-pointer whitespace-nowrap min-h-[36px]"
+            className="px-2.5 py-1.5 rounded-xl border border-amber-200 bg-amber-50 hover:bg-amber-100 text-amber-900 text-xs font-bold flex items-center gap-1.5 transition cursor-pointer whitespace-nowrap min-h-[36px]"
           >
             <Zap className="w-3.5 h-3.5 text-amber-500 fill-amber-500" />
             <span>PPOB</span>
@@ -330,28 +364,86 @@ export const CashierPOS: React.FC = () => {
         </div>
       </div>
 
-      {/* Main Content Area: Adaptive Split View for Tablet/Desktop & Switchable on Mobile */}
+      {/* Main Content Area: Side-by-Side Split View (Catalog Left + Live Cart Right) */}
       <div className="flex-1 flex flex-col lg:flex-row overflow-hidden p-2 md:p-3 gap-3">
-        {/* Component 1: Quick Touch Product Grid (Visible on Desktop / Tablet / or when Mobile tab is 'catalog') */}
+        {/* Component 1: Inline Smart Product Catalog (Always visible alongside Cart on Desktop/Laptop) */}
         <div className={`flex-1 bg-white rounded-2xl border border-slate-200 shadow-xs flex-col overflow-hidden ${
           mobileActiveTab === 'catalog' ? 'flex' : 'hidden lg:flex'
         }`}>
-          {/* Category Filter Pills (Horizontal Scroll, Touch Friendly >= 40px) */}
+          {/* Inline Catalog Search Bar & Layout Switcher (Replaces Popup Modal!) */}
+          <div className="p-2.5 border-b border-slate-200 bg-white flex items-center gap-2">
+            <div className="relative flex-1">
+              <Search className="w-4 h-4 text-blue-600 absolute left-3.5 top-2.5" />
+              <input
+                ref={catalogSearchInputRef}
+                type="text"
+                placeholder="Ketik nama produk, barcode, atau SKU untuk filter katalog... (F2)"
+                value={catalogSearch}
+                onChange={e => setCatalogSearch(e.target.value)}
+                className="w-full pl-9 pr-8 py-2 rounded-xl border border-slate-300 focus:border-blue-600 focus:ring-2 focus:ring-blue-500/20 focus:outline-hidden text-xs md:text-sm font-semibold bg-slate-50 focus:bg-white transition"
+              />
+              {catalogSearch && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCatalogSearch('');
+                    catalogSearchInputRef.current?.focus();
+                  }}
+                  className="absolute right-2.5 top-2 text-slate-400 hover:text-slate-700 p-0.5 rounded-md cursor-pointer"
+                  title="Bersihkan pencarian"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              )}
+            </div>
+
+            {/* Toggle Grid vs List View */}
+            <div className="flex items-center bg-slate-100 p-0.5 rounded-xl border border-slate-200 shrink-0">
+              <button
+                type="button"
+                onClick={() => setCatalogLayout('grid')}
+                className={`px-2.5 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1 transition cursor-pointer ${
+                  catalogLayout === 'grid'
+                    ? 'bg-white text-blue-700 shadow-xs'
+                    : 'text-slate-500 hover:text-slate-800'
+                }`}
+                title="Tampilan Grid Kartu"
+              >
+                <Grid className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Kartu</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setCatalogLayout('list')}
+                className={`px-2.5 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1 transition cursor-pointer ${
+                  catalogLayout === 'list'
+                    ? 'bg-white text-blue-700 shadow-xs'
+                    : 'text-slate-500 hover:text-slate-800'
+                }`}
+                title="Tampilan Daftar Baris (Mudah pilih Multi-Satuan)"
+              >
+                <List className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Daftar</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Category Filter Pills (Horizontal Scroll) */}
           <div className="px-3 py-2 border-b border-slate-100 flex items-center gap-1.5 overflow-x-auto no-scrollbar bg-slate-50/70">
             <button
               onClick={() => setSelectedCategory('ALL')}
-              className={`px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition cursor-pointer shrink-0 min-h-[38px] ${
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition cursor-pointer shrink-0 min-h-[36px] ${
                 selectedCategory === 'ALL'
                   ? 'bg-blue-600 text-white shadow-xs'
                   : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-100'
               }`}
             >
-              Semua Produk
+              Semua ({products.length})
             </button>
             <button
               type="button"
               onClick={() => setIsPPOBOpen(true)}
-              className="px-3.5 py-1.5 rounded-xl text-xs font-black whitespace-nowrap transition cursor-pointer shrink-0 min-h-[38px] bg-gradient-to-r from-amber-500 via-orange-500 to-amber-600 hover:from-amber-600 hover:to-orange-600 text-white shadow-xs flex items-center gap-1.5"
+              className="px-3 py-1.5 rounded-xl text-xs font-black whitespace-nowrap transition cursor-pointer shrink-0 min-h-[36px] bg-gradient-to-r from-amber-500 via-orange-500 to-amber-600 hover:from-amber-600 hover:to-orange-600 text-white shadow-xs flex items-center gap-1.5"
             >
               <Zap className="w-3.5 h-3.5 fill-white text-white" />
               <span>⚡ PPOB & Pulsa (F4)</span>
@@ -360,7 +452,7 @@ export const CashierPOS: React.FC = () => {
               <button
                 key={cat.id}
                 onClick={() => setSelectedCategory(cat.id)}
-                className={`px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition cursor-pointer shrink-0 min-h-[38px] ${
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition cursor-pointer shrink-0 min-h-[36px] ${
                   selectedCategory === cat.id
                     ? 'bg-blue-600 text-white shadow-xs'
                     : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-100'
@@ -371,53 +463,316 @@ export const CashierPOS: React.FC = () => {
             ))}
           </div>
 
-          {/* Product Cards Grid */}
+          {/* Product Catalog Content (Grid Mode or List Mode) */}
           <div className="flex-1 overflow-y-auto p-3">
             {filteredProducts.length === 0 ? (
-              <div className="flex flex-col items-center justify-center h-full text-slate-400 text-xs">
-                Tidak ada produk di kategori ini.
-              </div>
-            ) : (
-              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2.5">
-                {filteredProducts.map(prod => (
-                  <div
-                    key={prod.id}
-                    onClick={() => handleProductSelect(prod, prod.base_uom)}
-                    className="p-3 rounded-2xl border border-slate-200/90 hover:border-blue-500 hover:bg-blue-50/40 active:scale-97 transition cursor-pointer flex flex-col justify-between shadow-xs bg-white min-h-[105px] group select-none"
+              <div className="flex flex-col items-center justify-center h-full text-slate-400 text-xs gap-2 py-12">
+                <Search className="w-8 h-8 text-slate-300" />
+                <p>Tidak ada produk yang cocok dengan pencarian <strong>"{catalogSearch}"</strong>.</p>
+                {catalogSearch && (
+                  <button
+                    type="button"
+                    onClick={() => setCatalogSearch('')}
+                    className="px-3 py-1.5 rounded-lg bg-blue-50 text-blue-700 font-bold text-xs hover:bg-blue-100 cursor-pointer"
                   >
-                    <div>
-                      <div className="flex items-center justify-between mb-1">
-                        <span className="text-[10px] text-slate-400 font-mono truncate max-w-[80px]">
-                          {prod.sku}
-                        </span>
-                        {prod.requires_imei === 1 && (
-                          <span className="text-[9px] font-bold px-1.5 py-0.2 rounded bg-amber-100 text-amber-800 uppercase flex items-center gap-0.5">
-                            <Smartphone className="w-2.5 h-2.5" />
-                            IMEI
+                    Tampilkan Semua Produk
+                  </button>
+                )}
+              </div>
+            ) : catalogLayout === 'grid' ? (
+              /* MODE 1: TOUCH CARDS GRID (With Multi-UOM & In-Cart Live Controls) */
+              <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-2.5">
+                {filteredProducts.map(prod => {
+                  const inCartLines = items.filter(it => it.item_type === 'RETAIL' && it.product_id === prod.id);
+                  const baseCartLine = inCartLines.find(it => (it.unit_name || prod.base_uom) === prod.base_uom);
+                  const totalQtyInCart = inCartLines.reduce((sum, it) => sum + it.quantity, 0);
+                  const isInCart = totalQtyInCart > 0;
+
+                  return (
+                    <div
+                      key={prod.id}
+                      className={`p-3 rounded-2xl border transition flex flex-col justify-between shadow-xs min-h-[135px] select-none relative ${
+                        isInCart
+                          ? 'border-emerald-500 bg-emerald-50/25 ring-2 ring-emerald-500/15'
+                          : 'border-slate-200/90 hover:border-blue-400 bg-white'
+                      }`}
+                    >
+                      {/* Top Area: Clickable to add 1 Base UOM */}
+                      <div
+                        onClick={() => handleProductSelect(prod, prod.base_uom)}
+                        className="cursor-pointer group flex-1"
+                      >
+                        <div className="flex items-center justify-between gap-1 mb-1">
+                          <span className="text-[10px] text-slate-400 font-mono truncate max-w-[85px]">
+                            {prod.sku || prod.barcode}
                           </span>
+                          {isInCart ? (
+                            <span className="px-1.5 py-0.5 rounded-full bg-emerald-600 text-white text-[10px] font-extrabold flex items-center gap-0.5 shadow-2xs">
+                              <CheckCircle2 className="w-2.5 h-2.5" />
+                              {inCartLines.map(l => `${l.quantity} ${l.unit_name || prod.base_uom}`).join(', ')}
+                            </span>
+                          ) : prod.requires_imei === 1 ? (
+                            <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 uppercase flex items-center gap-0.5">
+                              <Smartphone className="w-2.5 h-2.5" />
+                              IMEI
+                            </span>
+                          ) : null}
+                        </div>
+
+                        <h4 className="font-bold text-xs text-slate-800 line-clamp-2 leading-snug group-hover:text-blue-700 transition">
+                          {prod.name}
+                        </h4>
+
+                        <div className="mt-1.5 flex items-baseline justify-between">
+                          <span className="font-extrabold text-xs text-blue-700 font-mono">
+                            Rp {(prod.selling_price ?? 0).toLocaleString('id-ID')}
+                            <span className="text-[10px] font-normal text-slate-400">/{prod.base_uom || 'Pcs'}</span>
+                          </span>
+                          <span className={`text-[10px] font-semibold ${
+                            (prod.stock_quantity ?? 0) <= 0 ? 'text-rose-500' : 'text-slate-400'
+                          }`}>
+                            Stok: {prod.stock_quantity ?? 0}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Bottom Area: Quick Add / Adjust Buttons + Multi-UOM */}
+                      <div className="mt-2.5 pt-2 border-t border-slate-100 space-y-1.5">
+                        {/* Base Unit Control: If already in cart (and not IMEI), show [- qty +], else show [+ Unit] */}
+                        {baseCartLine && prod.requires_imei !== 1 ? (
+                          <div className="flex items-center justify-between bg-emerald-600 text-white rounded-xl p-1 shadow-xs">
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                updateQuantity(baseCartLine.id, baseCartLine.quantity - 1);
+                              }}
+                              className="w-7 h-6 rounded-lg bg-emerald-700 hover:bg-emerald-800 flex items-center justify-center transition cursor-pointer font-bold"
+                              title="Kurangi 1"
+                            >
+                              <Minus className="w-3.5 h-3.5" />
+                            </button>
+                            <span className="text-[11px] font-extrabold font-mono px-1 truncate">
+                              {baseCartLine.quantity} {prod.base_uom || 'Pcs'}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleProductSelect(prod, prod.base_uom);
+                              }}
+                              className="w-7 h-6 rounded-lg bg-emerald-700 hover:bg-emerald-800 flex items-center justify-center transition cursor-pointer font-bold"
+                              title="Tambah 1 lagi"
+                            >
+                              <Plus className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleProductSelect(prod, prod.base_uom);
+                            }}
+                            className="w-full py-1.5 px-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 active:scale-98 text-white font-bold text-xs flex items-center justify-center gap-1 shadow-2xs transition cursor-pointer"
+                          >
+                            <Plus className="w-3.5 h-3.5" />
+                            <span>+ {prod.base_uom || 'Pcs'}</span>
+                          </button>
+                        )}
+
+                        {/* Multi-UOM Buttons directly on card if available */}
+                        {prod.units && prod.units.length > 0 && (
+                          <div className="flex flex-wrap gap-1">
+                            {prod.units.map(u => {
+                              const unitLine = inCartLines.find(it => it.unit_name === u.unit_name);
+                              return (
+                                <button
+                                  key={u.id}
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleProductSelect(prod, u.unit_name);
+                                  }}
+                                  className={`flex-1 min-w-[45%] py-1 px-1.5 rounded-lg text-[10px] font-bold border transition cursor-pointer truncate ${
+                                    unitLine
+                                      ? 'bg-emerald-100 border-emerald-400 text-emerald-900'
+                                      : 'bg-slate-100 hover:bg-blue-50 border-slate-200 hover:border-blue-300 text-slate-700'
+                                  }`}
+                                  title={`Tambah 1 ${u.unit_name} (isi ${u.conversion_factor} ${prod.base_uom}) - Rp ${(u.selling_price ?? 0).toLocaleString('id-ID')}`}
+                                >
+                                  {unitLine ? `✓ ${unitLine.quantity} ` : '+ '}{u.unit_name}
+                                </button>
+                              );
+                            })}
+                          </div>
                         )}
                       </div>
-                      <h4 className="font-bold text-xs text-slate-800 line-clamp-2 leading-snug group-hover:text-blue-700 transition">
-                        {prod.name}
-                      </h4>
                     </div>
+                  );
+                })}
+              </div>
+            ) : (
+              /* MODE 2: COMPACT LIST VIEW (Full Detail + Multi-UOM Side-by-Side) */
+              <div className="space-y-2">
+                {filteredProducts.map(prod => {
+                  const inCartLines = items.filter(it => it.item_type === 'RETAIL' && it.product_id === prod.id);
+                  const isInCart = inCartLines.length > 0;
 
-                    <div className="mt-2 pt-2 border-t border-slate-100 flex items-center justify-between">
-                      <span className="font-extrabold text-xs text-blue-600 font-mono">
-                        Rp {(prod.selling_price ?? 0).toLocaleString('id-ID')}
-                      </span>
-                      <span className="text-[10px] text-slate-400 font-medium">
-                        {prod.stock_quantity ?? 0} {prod.base_uom || 'Pcs'}
-                      </span>
+                  return (
+                    <div
+                      key={prod.id}
+                      className={`p-3 rounded-xl border transition flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 ${
+                        isInCart
+                          ? 'border-emerald-500 bg-emerald-50/30 ring-1 ring-emerald-500/20'
+                          : 'border-slate-200 hover:border-blue-300 bg-white hover:bg-slate-50/60'
+                      }`}
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-bold text-xs md:text-sm text-slate-800">
+                            {prod.name}
+                          </span>
+                          {isInCart && (
+                            <span className="px-2 py-0.5 rounded-full bg-emerald-600 text-white text-[10px] font-extrabold flex items-center gap-1">
+                              <CheckCircle2 className="w-3 h-3" />
+                              Di Keranjang: {inCartLines.map(l => `${l.quantity} ${l.unit_name || prod.base_uom}`).join(', ')}
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-[11px] text-slate-500 font-mono flex items-center gap-2 mt-0.5 flex-wrap">
+                          <span>Barcode: {prod.barcode || prod.sku}</span>
+                          <span>•</span>
+                          <span className={(prod.stock_quantity ?? 0) <= 0 ? 'text-rose-600 font-bold' : ''}>
+                            Stok: {prod.stock_quantity ?? 0} {prod.base_uom || 'Pcs'}
+                          </span>
+                          <span>•</span>
+                          <span className="font-bold text-blue-700">
+                            Rp {(prod.selling_price ?? 0).toLocaleString('id-ID')} / {prod.base_uom || 'Pcs'}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Multi-UOM & Quick Add Buttons */}
+                      <div className="flex items-center gap-1.5 flex-wrap shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => handleProductSelect(prod, prod.base_uom)}
+                          className="px-3 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 active:scale-97 text-white font-bold text-xs flex items-center gap-1 shadow-2xs transition cursor-pointer"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                          <span>+ {prod.base_uom || 'Pcs'}</span>
+                        </button>
+
+                        {prod.units?.map(u => {
+                          const unitLine = inCartLines.find(it => it.unit_name === u.unit_name);
+                          return (
+                            <button
+                              key={u.id}
+                              type="button"
+                              onClick={() => handleProductSelect(prod, u.unit_name)}
+                              className={`px-2.5 py-1.5 rounded-xl font-bold text-xs border transition cursor-pointer ${
+                                unitLine
+                                  ? 'bg-emerald-100 border-emerald-400 text-emerald-900'
+                                  : 'bg-slate-100 hover:bg-slate-200 text-slate-800 border-slate-300'
+                              }`}
+                              title={`Jual 1 ${u.unit_name} (isi ${u.conversion_factor} ${prod.base_uom || 'Pcs'}) - Rp ${(u.selling_price ?? 0).toLocaleString('id-ID')}`}
+                            >
+                              {unitLine ? `✓ ${unitLine.quantity} ` : '+ '}{u.unit_name} ({u.conversion_factor} {prod.base_uom || 'Pcs'})
+                            </button>
+                          );
+                        })}
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
+
+          {/* Mobile Live Cart Peek Drawer (So mobile users on 'Katalog' tab can still see & edit Cart without switching tabs!) */}
+          {items.length > 0 && (
+            <div className="lg:hidden border-t-2 border-blue-600 bg-slate-900 text-white">
+              {mobileCartPeekOpen && (
+                <div className="max-h-44 overflow-y-auto divide-y divide-slate-800 bg-slate-800/95 px-3 py-1.5">
+                  <div className="flex items-center justify-between py-1 text-[10px] font-bold text-slate-400 uppercase">
+                    <span>Daftar Barang di Keranjang ({itemCount})</span>
+                    <button
+                      type="button"
+                      onClick={() => setMobileCartPeekOpen(false)}
+                      className="text-blue-400 hover:text-blue-300 cursor-pointer"
+                    >
+                      Tutup Ringkasan ▼
+                    </button>
+                  </div>
+                  {items.map(it => (
+                    <div key={it.id} className="py-1.5 flex items-center justify-between gap-2 text-xs">
+                      <div className="truncate flex-1">
+                        <span className="font-bold text-white">{it.item_name}</span>
+                        <span className="text-slate-400 font-mono text-[10px] ml-1.5">
+                          ({it.quantity} {it.unit_name || 'Pcs'} = Rp {it.subtotal.toLocaleString('id-ID')})
+                        </span>
+                      </div>
+                      {it.item_type === 'RETAIL' && (
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => updateQuantity(it.id, it.quantity - 1)}
+                            className="w-6 h-6 rounded bg-slate-700 hover:bg-slate-600 flex items-center justify-center text-white"
+                          >
+                            <Minus className="w-3 h-3" />
+                          </button>
+                          <span className="w-5 text-center font-mono font-bold text-[11px]">{it.quantity}</span>
+                          <button
+                            type="button"
+                            onClick={() => updateQuantity(it.id, it.quantity + 1)}
+                            className="w-6 h-6 rounded bg-slate-700 hover:bg-slate-600 flex items-center justify-center text-white"
+                          >
+                            <Plus className="w-3 h-3" />
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div className="p-2.5 flex items-center justify-between gap-2">
+                <button
+                  type="button"
+                  onClick={() => setMobileCartPeekOpen(!mobileCartPeekOpen)}
+                  className="flex-1 text-left cursor-pointer"
+                >
+                  <div className="flex items-center gap-1.5 text-[11px] font-bold text-blue-300">
+                    <ShoppingBag className="w-3.5 h-3.5" />
+                    <span>{itemCount} Item di Keranjang</span>
+                    <span className="underline text-[10px] text-amber-300 ml-1">
+                      {mobileCartPeekOpen ? '(Sembunyikan ▼)' : '(Cek Item ▲)'}
+                    </span>
+                  </div>
+                  <div className="text-sm font-black font-mono text-white">
+                    Rp {grandTotal.toLocaleString('id-ID')}
+                  </div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMobileActiveTab('cart')}
+                  className="px-3 py-2 rounded-xl bg-slate-700 hover:bg-slate-600 text-white text-xs font-bold cursor-pointer"
+                >
+                  Detail
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsPaymentOpen(true)}
+                  className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-extrabold cursor-pointer shadow-md"
+                >
+                  Bayar
+                </button>
+              </div>
+            </div>
+          )}
         </div>
 
-        {/* Component 2: Hybrid Cart Table & Checkout Panel */}
+        {/* Component 2: Hybrid Cart Table & Checkout Panel (Always Visible on Right Side) */}
         <div className={`w-full lg:w-[460px] xl:w-[490px] flex-col gap-3 overflow-hidden ${
           mobileActiveTab === 'cart' ? 'flex flex-1' : 'hidden lg:flex'
         }`}>
@@ -428,7 +783,7 @@ export const CashierPOS: React.FC = () => {
               <div className="flex items-center gap-2">
                 <ShoppingBag className="w-4 h-4 text-blue-600" />
                 <h2 className="font-extrabold text-xs md:text-sm text-slate-800">
-                  Keranjang Kasir
+                  Keranjang Kasir Live
                 </h2>
                 <span className="px-2 py-0.5 rounded-full bg-blue-100 text-blue-800 text-[11px] font-bold font-mono">
                   {itemCount} item
@@ -449,17 +804,24 @@ export const CashierPOS: React.FC = () => {
                   </div>
                   <h3 className="font-bold text-sm text-slate-700">Keranjang Kasir Kosong</h3>
                   <p className="text-[11px] text-slate-500 max-w-xs mt-1">
-                    Pilih produk dari katalog di sebelah kiri, scan barcode (<span className="font-mono font-bold">F1</span>), atau transaksi PPOB (<span className="font-mono font-bold">F4</span>).
+                    Klik produk di katalog sebelah kiri, ketik pencarian (<span className="font-mono font-bold">F2</span>), scan barcode (<span className="font-mono font-bold">F1</span>), atau transaksi PPOB (<span className="font-mono font-bold">F4</span>).
                   </p>
                 </div>
               ) : (
-                items.map((it, idx) => {
+                items.map((it) => {
                   const isPPOB = it.item_type === 'PPOB';
+                  const catalogProd = !isPPOB ? products.find(p => p.id === it.product_id) : undefined;
+                  const isHighlighted = !isPPOB && lastHighlightedProductId === it.product_id;
+
                   return (
                     <div
                       key={it.id}
-                      className={`p-3 hover:bg-slate-50/80 transition flex items-start justify-between gap-2 ${
-                        isPPOB ? 'bg-amber-50/20' : ''
+                      className={`p-3 transition-all duration-300 flex items-start justify-between gap-2 ${
+                        isHighlighted
+                          ? 'bg-emerald-50/90 border-l-4 border-l-emerald-500'
+                          : isPPOB
+                          ? 'bg-amber-50/20 hover:bg-slate-50/80'
+                          : 'hover:bg-slate-50/80'
                       }`}
                     >
                       <div className="flex-1 min-w-0">
@@ -474,22 +836,54 @@ export const CashierPOS: React.FC = () => {
                           </span>
                         </div>
 
-                        {/* PPOB Destination or IMEI/SN */}
+                        {/* PPOB Destination or Retail Unit & IMEI/SN */}
                         {isPPOB ? (
                           <div className="text-[10.5px] text-amber-800 font-mono truncate">
                             Tujuan: {it.ppob_target_no} {it.ppob_customer_name ? `(${it.ppob_customer_name})` : ''}
                           </div>
                         ) : (
-                          <div className="space-y-0.5">
+                          <div className="space-y-1">
                             {it.imei_sn && (
                               <div className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-200 text-[10px] font-mono">
                                 <span>📱</span>
                                 <span className="truncate max-w-[200px]">{it.imei_sn}</span>
                               </div>
                             )}
-                            <div className="text-[10px] text-slate-400 font-mono">
+                            <div className="text-[10px] text-slate-500 font-mono">
                               @ Rp {it.unit_price.toLocaleString('id-ID')} / {it.unit_name || 'Pcs'}
                             </div>
+
+                            {/* Inline Multi-UOM Unit Switcher right inside the Cart! */}
+                            {catalogProd && catalogProd.units && catalogProd.units.length > 0 && (
+                              <div className="flex items-center gap-1 flex-wrap pt-0.5">
+                                <span className="text-[9px] text-slate-400 font-semibold">Satuan:</span>
+                                <button
+                                  type="button"
+                                  onClick={() => changeUnit(it.id, catalogProd.base_uom)}
+                                  className={`px-1.5 py-0.5 rounded text-[9px] font-bold transition cursor-pointer ${
+                                    (it.unit_name || catalogProd.base_uom) === catalogProd.base_uom
+                                      ? 'bg-blue-600 text-white'
+                                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                                  }`}
+                                >
+                                  {catalogProd.base_uom}
+                                </button>
+                                {catalogProd.units.map(u => (
+                                  <button
+                                    key={u.id}
+                                    type="button"
+                                    onClick={() => changeUnit(it.id, u.unit_name)}
+                                    className={`px-1.5 py-0.5 rounded text-[9px] font-bold transition cursor-pointer ${
+                                      it.unit_name === u.unit_name
+                                        ? 'bg-blue-600 text-white'
+                                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                                    }`}
+                                  >
+                                    {u.unit_name}
+                                  </button>
+                                ))}
+                              </div>
+                            )}
                           </div>
                         )}
 
@@ -499,11 +893,12 @@ export const CashierPOS: React.FC = () => {
                         </div>
                       </div>
 
-                      {/* Quantity & Delete Controls (Large touch targets >= 36px) */}
+                      {/* Quantity & Delete Controls (With Direct Number Input & +/- Buttons) */}
                       <div className="flex flex-col items-end gap-1.5 shrink-0">
                         <button
                           onClick={() => removeItem(it.id)}
-                          className="p-1 rounded text-slate-300 hover:text-rose-600 transition cursor-pointer"
+                          className="p-1 rounded text-slate-300 hover:text-rose-600 hover:bg-rose-50 transition cursor-pointer"
+                          title="Hapus item ini dari keranjang"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
@@ -512,16 +907,27 @@ export const CashierPOS: React.FC = () => {
                           <div className="flex items-center gap-1 bg-slate-100 p-0.5 rounded-lg border border-slate-200">
                             <button
                               onClick={() => updateQuantity(it.id, it.quantity - 1)}
-                              className="w-7 h-7 rounded-md bg-white hover:bg-slate-200 flex items-center justify-center text-slate-700 transition cursor-pointer"
+                              className="w-7 h-7 rounded-md bg-white hover:bg-rose-50 hover:text-rose-600 flex items-center justify-center text-slate-700 transition cursor-pointer shadow-2xs"
+                              title="Kurangi 1"
                             >
                               <Minus className="w-3 h-3" />
                             </button>
-                            <span className="w-6 text-center font-bold font-mono text-xs">
-                              {it.quantity}
-                            </span>
+                            <input
+                              type="number"
+                              min="1"
+                              value={it.quantity}
+                              onChange={e => {
+                                const val = parseInt(e.target.value, 10);
+                                if (!isNaN(val) && val > 0) {
+                                  updateQuantity(it.id, val);
+                                }
+                              }}
+                              className="w-10 text-center font-bold font-mono text-xs bg-transparent focus:bg-white focus:outline-hidden rounded py-0.5"
+                            />
                             <button
                               onClick={() => updateQuantity(it.id, it.quantity + 1)}
-                              className="w-7 h-7 rounded-md bg-white hover:bg-slate-200 flex items-center justify-center text-slate-700 transition cursor-pointer"
+                              className="w-7 h-7 rounded-md bg-white hover:bg-blue-50 hover:text-blue-600 flex items-center justify-center text-slate-700 transition cursor-pointer shadow-2xs"
+                              title="Tambah 1"
                             >
                               <Plus className="w-3 h-3" />
                             </button>
