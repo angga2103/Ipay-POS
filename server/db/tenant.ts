@@ -243,7 +243,9 @@ export function initTenantDatabase(tenantDb: Database.Database, tenantId: string
       VALUES (?, ?, ?, ?, ?)
     `);
     insertUser.run('owner', hashSecret('admin123'), storeName ? `Pemilik (${storeName})` : `Owner (${tenantId})`, 'owner', hashSecret('112233'));
-    insertUser.run('kasir1', hashSecret('kasir123'), 'Kasir Utama', 'cashier', hashSecret('123456'));
+    if (tenantId === 'default') {
+      insertUser.run('kasir1', hashSecret('kasir123'), 'Kasir Utama', 'cashier', hashSecret('123456'));
+    }
   }
 
   // Foundation: Seed Categories if empty
@@ -520,6 +522,146 @@ export function closeTenantDatabase(rawTenantId: string) {
     } catch {}
     tenantPool.delete(tenantId);
   }
+}
+
+/**
+ * Check if a tenant database already exists on disk (or is 'default') without creating it
+ */
+export function tenantExists(rawTenantId: string | undefined | null): boolean {
+  const tenantId = sanitizeTenantId(rawTenantId);
+  if (tenantId === 'default') return true;
+  if (tenantPool.has(tenantId)) return true;
+  const tenantDbPath = path.join(tenantsDir, `${tenantId}.db`);
+  return fs.existsSync(tenantDbPath);
+}
+
+/**
+ * Resolve an input string (Store ID, Slug, or Store Name like "Toko Berkah") to an existing tenant ID.
+ * Returns null if no existing tenant matches (NEVER creates a new .db file).
+ */
+export function resolveExistingTenantId(input: string | undefined | null): string | null {
+  if (!input || !String(input).trim()) return 'default';
+  const raw = String(input).trim();
+  if (raw.toLowerCase() === 'default') return 'default';
+
+  const existingIds = getAllTenantIds();
+  const slugCandidate = raw.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  const sanitizedCandidate = sanitizeTenantId(raw);
+  const lowerSanitized = sanitizedCandidate.toLowerCase();
+
+  // 1. Direct or case-insensitive ID / slug match
+  for (const id of existingIds) {
+    const lowerId = id.toLowerCase();
+    if (
+      id === raw ||
+      lowerId === raw.toLowerCase() ||
+      lowerId === slugCandidate ||
+      id === sanitizedCandidate ||
+      lowerId === lowerSanitized
+    ) {
+      return id;
+    }
+  }
+
+  // 2. Match by store_name in settings across existing tenants
+  for (const id of existingIds) {
+    try {
+      const tDb = getTenantDatabase(id);
+      const row = tDb.prepare("SELECT value FROM settings WHERE key = 'store_name'").get() as { value?: string } | undefined;
+      if (row?.value && row.value.trim().toLowerCase() === raw.toLowerCase()) {
+        return id;
+      }
+    } catch {}
+  }
+
+  return null;
+}
+
+/**
+ * Normalize phone to 08xxx and 628xxx for flexible lookup
+ */
+function normalizeLookupPhone(raw: string): { norm08: string; norm62: string } | null {
+  const digits = String(raw || '').replace(/\D/g, '');
+  if (digits.length < 8) return null;
+  let norm08 = digits;
+  if (digits.startsWith('628')) {
+    norm08 = '0' + digits.slice(2);
+  } else if (digits.startsWith('8')) {
+    norm08 = '0' + digits;
+  }
+  const norm62 = norm08.startsWith('0') ? '62' + norm08.slice(1) : norm08;
+  return { norm08, norm62 };
+}
+
+/**
+ * Search across existing tenants for a user matching phone, username, email, or name.
+ * Never creates any new database files.
+ */
+export function findTenantsByUserIdentifier(
+  identifier: string,
+  preferTenantId?: string | null
+): Array<{ tenantId: string; storeName: string; storePhone: string; user: any }> {
+  const clean = String(identifier || '').trim().toLowerCase();
+  if (!clean) return [];
+
+  const phoneNorm = normalizeLookupPhone(clean);
+  const allIds = getAllTenantIds();
+
+  // Order tenants: if preferTenantId is specified and exists, check it first; check non-default stores before 'default' if identifier is generic like 'owner'
+  const orderedIds = [...allIds].sort((a, b) => {
+    if (preferTenantId && a === preferTenantId) return -1;
+    if (preferTenantId && b === preferTenantId) return 1;
+    return 0;
+  });
+
+  const results: Array<{ tenantId: string; storeName: string; storePhone: string; user: any }> = [];
+
+  for (const tId of orderedIds) {
+    try {
+      const tDb = getTenantDatabase(tId);
+      const storeNameRow = tDb.prepare("SELECT value FROM settings WHERE key = 'store_name'").get() as { value?: string } | undefined;
+      const storePhoneRow = tDb.prepare("SELECT value FROM settings WHERE key = 'store_phone'").get() as { value?: string } | undefined;
+      const storeName = storeNameRow?.value || (tId === 'default' ? 'Toko Utama' : `Toko ${tId}`);
+      const storePhone = storePhoneRow?.value || '';
+
+      const users = tDb.prepare(`
+        SELECT id, username, password, name, role, pin, email, phone, is_active
+        FROM users
+        ORDER BY CASE WHEN role = 'owner' THEN 0 ELSE 1 END, id ASC
+      `).all() as any[];
+
+      for (const u of users) {
+        const uUser = String(u.username || '').trim().toLowerCase();
+        const uEmail = String(u.email || '').trim().toLowerCase();
+        const uName = String(u.name || '').trim().toLowerCase();
+        const uPhoneNorm = normalizeLookupPhone(u.phone || (u.role === 'owner' ? storePhone : ''));
+
+        let matched = false;
+        if (uUser === clean || (uEmail && uEmail === clean) || (uName && uName === clean)) {
+          matched = true;
+        } else if (phoneNorm && uPhoneNorm) {
+          if (
+            uPhoneNorm.norm08 === phoneNorm.norm08 ||
+            uPhoneNorm.norm62 === phoneNorm.norm62
+          ) {
+            matched = true;
+          }
+        }
+
+        if (matched) {
+          results.push({
+            tenantId: tId,
+            storeName,
+            storePhone: u.phone || storePhone,
+            user: u,
+          });
+          break; // one matching user per tenant
+        }
+      }
+    } catch {}
+  }
+
+  return results;
 }
 
 /**

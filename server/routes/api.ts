@@ -1,7 +1,18 @@
 import { Router, Request, Response } from 'express';
 import crypto from 'crypto';
 import db from '../db/database';
-import { getTenantDatabase, tenantContext, getAllTenantSummaries, sanitizeTenantId, defaultDb, getAllTenantIds, resolveWebhookTenantIds } from '../db/tenant';
+import {
+  getTenantDatabase,
+  tenantContext,
+  getAllTenantSummaries,
+  sanitizeTenantId,
+  defaultDb,
+  getAllTenantIds,
+  resolveWebhookTenantIds,
+  resolveExistingTenantId,
+  findTenantsByUserIdentifier,
+  tenantExists,
+} from '../db/tenant';
 import { requireRole } from '../middleware/tenant';
 import { createAuthToken, verifySecret, hashSecret, createOtpSessionToken, verifyOtpSessionToken, createPinSessionToken, verifyPinSessionToken, generateRecoveryKey } from '../utils/auth-token';
 import { AccountingService } from '../services/accounting';
@@ -12,6 +23,7 @@ import { ThermalPrinterService } from '../services/printer';
 import { ServiceDeskService } from '../services/service-desk';
 import { BackupService } from '../services/backup';
 import { MailerService } from '../services/mailer';
+import { WhatsAppOtpService, normalizePhone, maskPhone, checkAuthRateLimit, resetAuthRateLimit } from '../services/whatsapp';
 
 export const apiRouter = Router();
 
@@ -40,7 +52,17 @@ db.exec(`
 // 1. AUTH & USERS & RBAC OPERATOR MANAGEMENT
 // ============================================================
 
-// Daftar Seluruh Tenant / Toko untuk Pemilihan Cepat di Halaman Login
+// Cek Status Koneksi Bot WhatsApp Baileys ipay.my.id
+apiRouter.get('/auth/whatsapp-status', async (_req: Request, res: Response) => {
+  try {
+    const status = await WhatsAppOtpService.getBotStatus();
+    res.json({ success: true, ...status });
+  } catch (err: any) {
+    res.json({ success: false, connected: false, error: err.message });
+  }
+});
+
+// Daftar Seluruh Tenant / Toko
 apiRouter.get('/tenant/list', (_req: Request, res: Response) => {
   try {
     const list = getAllTenantSummaries();
@@ -50,62 +72,152 @@ apiRouter.get('/tenant/list', (_req: Request, res: Response) => {
   }
 });
 
-// Step 1 Login Mandiri (Skema 1): Cek Kredensial Toko + Username/No HP + Password
+// =========================================================================
+// JALUR 1A: LOGIN HARIAN CEPAT (SMART AUTO-DETECT TOKO + PASSWORD + 6-DIGIT PIN)
+// =========================================================================
+
+// Step 1 Login: Cek Kredensial (Bisa No. WA / Username / Nama Pemilik, Deteksi Toko Otomatis!)
 apiRouter.post('/auth/login-step1', async (req: Request, res: Response) => {
   try {
     const { tenantId, username, password } = req.body;
     if (!username || !password) {
-      return res.status(400).json({ error: 'Username/No HP/Email dan kata sandi wajib diisi' });
+      return res.status(400).json({ error: 'Nomor WhatsApp / Username dan kata sandi wajib diisi' });
     }
 
-    const tId = sanitizeTenantId(tenantId || req.tenantId || 'default');
-    const targetDb = getTenantDatabase(tId);
-
-    const cleanInput = username.trim().toLowerCase();
-    const user = targetDb.prepare(`
-      SELECT id, username, password, name, role, pin, email, phone, is_active 
-      FROM users 
-      WHERE LOWER(username) = ? 
-         OR (email IS NOT NULL AND LOWER(email) = ?) 
-         OR (phone IS NOT NULL AND phone = ?)
-         OR (? = 'owner' AND role = 'owner')
-      LIMIT 1
-    `).get(cleanInput, cleanInput, cleanInput, cleanInput) as any;
-
-    if (!user || !verifySecret(password, user.password)) {
-      return res.status(401).json({ error: 'ID Toko, Username/No HP, atau kata sandi tidak cocok' });
-    }
-    if (user.is_active === 0) {
-      return res.status(403).json({ error: 'Akun operator ini telah dinonaktifkan oleh Administrator' });
+    const clientIp = String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown');
+    const cleanInput = String(username).trim();
+    const rl = checkAuthRateLimit(`login_step1:${clientIp}:${cleanInput.toLowerCase()}`, 8, 3 * 60 * 1000);
+    if (!rl.allowed) {
+      return res.status(429).json({
+        error: `Terlalu banyak percobaan login gagal. Silakan tunggu ${rl.retryAfterSec} detik atau gunakan Login via OTP WhatsApp.`,
+      });
     }
 
-    const storeNameRow = targetDb.prepare("SELECT value FROM settings WHERE key = 'store_name'").get() as any;
-    const storeName = storeNameRow?.value || (tId === 'default' ? 'Toko Utama' : `Toko ${tId}`);
+    const rawTenantInput = String(tenantId || '').trim();
+    const isExplicitTenant = Boolean(rawTenantInput && rawTenantInput.toLowerCase() !== 'default');
+    let explicitResolvedId: string | null = null;
 
-    // Generate PIN Session Token (10 menit)
+    if (isExplicitTenant) {
+      explicitResolvedId = resolveExistingTenantId(rawTenantInput);
+      // Jika user mengetik nama/ID toko yang tidak ditemukan, kita coba cari berdasarkan No WA / Username dulu
+      // namun jika tetap tidak ada, tolak tanpa membuat file .db baru!
+    }
+
+    // Cari seluruh kandidat toko yang memiliki user (No WA / Username / Email / Nama) tersebut
+    const candidates = findTenantsByUserIdentifier(cleanInput, explicitResolvedId);
+
+    // Jika user eksplisit memilih ID toko tertentu yang valid, prioritaskan cek di toko tersebut
+    if (explicitResolvedId) {
+      const targetDb = getTenantDatabase(explicitResolvedId);
+      const normPhone = normalizePhone(cleanInput);
+      const lowerInput = cleanInput.toLowerCase();
+      const directUser = targetDb.prepare(`
+        SELECT id, username, password, name, role, pin, email, phone, is_active
+        FROM users
+        WHERE LOWER(username) = ?
+           OR (email IS NOT NULL AND LOWER(email) = ?)
+           OR (phone IS NOT NULL AND (phone = ? OR phone = ?))
+           OR LOWER(name) = ?
+           OR (? = 'owner' AND role = 'owner')
+        LIMIT 1
+      `).get(lowerInput, lowerInput, cleanInput, normPhone, lowerInput, lowerInput) as any;
+
+      if (directUser && verifySecret(password, directUser.password)) {
+        if (directUser.is_active === 0) {
+          return res.status(403).json({ error: 'Akun operator ini sedang dinonaktifkan oleh Owner Toko' });
+        }
+        resetAuthRateLimit(`login_step1:${clientIp}:${cleanInput.toLowerCase()}`);
+        const storeNameRow = targetDb.prepare("SELECT value FROM settings WHERE key = 'store_name'").get() as any;
+        const storeName = storeNameRow?.value || (explicitResolvedId === 'default' ? 'Toko Utama' : `Toko ${explicitResolvedId}`);
+
+        const pinSessionToken = createPinSessionToken({
+          tenantId: explicitResolvedId,
+          userId: directUser.id,
+          username: directUser.username,
+          role: directUser.role,
+          storeName,
+        });
+
+        return res.json({
+          success: true,
+          requiresPin: true,
+          tempSessionToken: pinSessionToken,
+          tenantId: explicitResolvedId,
+          storeName,
+          userName: directUser.name,
+          hasPin: Boolean(directUser.pin),
+        });
+      }
+    }
+
+    // Filter kandidat lintas-toko yang kata sandinya cocok
+    const validMatches = candidates.filter(c => verifySecret(password, c.user.password));
+
+    // Jika ada toko selain 'default' yang cocok dan user tidak memaksa masuk ke 'default', prioritaskan toko asli milik user!
+    const nonDefaultMatches = validMatches.filter(m => m.tenantId !== 'default');
+    const chosenList = (nonDefaultMatches.length > 0 && !isExplicitTenant) ? nonDefaultMatches : validMatches;
+
+    if (chosenList.length === 0) {
+      if (isExplicitTenant && !explicitResolvedId) {
+        return res.status(404).json({
+          error: `Toko "${rawTenantInput}" tidak ditemukan. Tips: Kosongkan kolom ID Toko dan cukup masukkan Nomor WhatsApp + Kata Sandi Anda.`,
+        });
+      }
+      if (candidates.length > 0) {
+        return res.status(401).json({
+          error: 'Kata sandi yang Anda masukkan salah. Klik "Lupa Sandi / PIN?" atau gunakan "Login via OTP WhatsApp".',
+        });
+      }
+      return res.status(401).json({
+        error: 'Akun dengan Nomor WhatsApp / Username tersebut belum ditemukan. Pastikan nomor sudah benar atau klik "Daftar Toko Baru".',
+      });
+    }
+
+    // Jika 1 nomor WA memiliki lebih dari 1 cabang toko dengan password yang sama dan user belum memilih toko
+    if (chosenList.length > 1 && !explicitResolvedId) {
+      return res.json({
+        success: true,
+        requiresStoreSelection: true,
+        stores: chosenList.map(m => ({
+          tenantId: m.tenantId,
+          storeName: m.storeName,
+          userName: m.user.name,
+          role: m.user.role,
+        })),
+        message: 'Ditemukan lebih dari 1 toko terdaftar pada akun Anda. Silakan pilih toko tujuan.',
+      });
+    }
+
+    const matched = chosenList[0];
+    if (matched.user.is_active === 0) {
+      return res.status(403).json({ error: 'Akun operator ini telah dinonaktifkan oleh Owner Toko' });
+    }
+
+    resetAuthRateLimit(`login_step1:${clientIp}:${cleanInput.toLowerCase()}`);
+
     const pinSessionToken = createPinSessionToken({
-      tenantId: tId,
-      userId: user.id,
-      username: user.username,
-      role: user.role,
-      storeName,
+      tenantId: matched.tenantId,
+      userId: matched.user.id,
+      username: matched.user.username,
+      role: matched.user.role,
+      storeName: matched.storeName,
     });
 
     res.json({
       success: true,
       requiresPin: true,
       tempSessionToken: pinSessionToken,
-      tenantId: tId,
-      storeName,
-      userName: user.name,
-      hasPin: Boolean(user.pin),
+      tenantId: matched.tenantId,
+      storeName: matched.storeName,
+      userName: matched.user.name,
+      hasPin: Boolean(matched.user.pin),
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Step 2 Login (Skema 1): Verifikasi 6-Digit PIN Keamanan Toko & Terbitkan Token Akses JWT
+// Step 2 Login: Verifikasi 6-Digit PIN Keamanan Toko & Terbitkan Token Akses JWT
 apiRouter.post('/auth/login-verify-pin', (req: Request, res: Response) => {
   try {
     const { tempSessionToken, pin } = req.body;
@@ -115,7 +227,19 @@ apiRouter.post('/auth/login-verify-pin', (req: Request, res: Response) => {
 
     const payload = verifyPinSessionToken(tempSessionToken);
     if (!payload || !payload.userId) {
-      return res.status(400).json({ error: 'Sesi verifikasi PIN telah kedaluwarsa. Silakan masukkan kata sandi kembali.' });
+      return res.status(400).json({ error: 'Sesi verifikasi PIN telah kedaluwarsa (10 menit). Silakan masukkan kata sandi kembali.' });
+    }
+
+    const rlKey = `pin_verify:${payload.tenantId}:${payload.userId}`;
+    const rl = checkAuthRateLimit(rlKey, 5, 3 * 60 * 1000);
+    if (!rl.allowed) {
+      return res.status(429).json({
+        error: `Terlalu banyak percobaan PIN salah. Akun dikunci sementara selama ${rl.retryAfterSec} detik demi keamanan.`,
+      });
+    }
+
+    if (!tenantExists(payload.tenantId)) {
+      return res.status(404).json({ error: 'Database toko tidak ditemukan' });
     }
 
     const targetDb = getTenantDatabase(payload.tenantId);
@@ -129,11 +253,12 @@ apiRouter.post('/auth/login-verify-pin', (req: Request, res: Response) => {
 
     const cleanPin = String(pin).trim();
     if (!user.pin) {
-      // Jika user belum memiliki PIN, simpan PIN ini sebagai PIN keamanan pertama
       targetDb.prepare('UPDATE users SET pin = ? WHERE id = ?').run(hashSecret(cleanPin), user.id);
     } else if (!verifySecret(cleanPin, user.pin)) {
       return res.status(401).json({ error: '6-Digit PIN Keamanan Toko salah' });
     }
+
+    resetAuthRateLimit(rlKey);
 
     const token = createAuthToken({
       tenantId: payload.tenantId,
@@ -161,12 +286,183 @@ apiRouter.post('/auth/login-verify-pin', (req: Request, res: Response) => {
   }
 });
 
-// Pendaftaran Toko Baru (Skema 1 Mandiri: Password + 6-Digit PIN + Terbitkan Recovery Key + Opsional Auto-Provisioning PPOB)
+// =========================================================================
+// JALUR 1B: LOGIN INSTAN VIA WHATSAPP OTP (BOT BAILEYS IPAY.MY.ID)
+// =========================================================================
+
+// Step 1 Login WA OTP: Kirim 6-Digit OTP ke Nomor WhatsApp Terdaftar
+apiRouter.post('/auth/login-wa-send-otp', async (req: Request, res: Response) => {
+  try {
+    const { phone, tenantId } = req.body;
+    const cleanPhone = normalizePhone(phone);
+    if (!cleanPhone || cleanPhone.length < 8) {
+      return res.status(400).json({ error: 'Masukkan Nomor WhatsApp aktif yang terdaftar (contoh: 081234567890)' });
+    }
+
+    const explicitTenant = (tenantId && String(tenantId).trim().toLowerCase() !== 'default')
+      ? resolveExistingTenantId(tenantId)
+      : null;
+
+    const matches = findTenantsByUserIdentifier(cleanPhone, explicitTenant);
+    if (matches.length === 0) {
+      return res.status(404).json({
+        error: `Nomor WhatsApp ${cleanPhone} belum terdaftar di toko mana pun. Silakan daftar terlebih dahulu di tab "Daftar Toko Baru".`,
+      });
+    }
+
+    const primaryMatch = matches[0];
+    const otpRes = await WhatsAppOtpService.sendOtp({
+      phone: cleanPhone,
+      action: 'login',
+      storeName: primaryMatch.storeName,
+      tenantId: primaryMatch.tenantId,
+    });
+
+    if (!otpRes.success) {
+      return res.status(400).json({ error: otpRes.message });
+    }
+
+    res.json({
+      success: true,
+      phone: cleanPhone,
+      maskedPhone: otpRes.maskedPhone,
+      waConnected: otpRes.waConnected,
+      tenantId: primaryMatch.tenantId,
+      storeName: primaryMatch.storeName,
+      stores: matches.map(m => ({
+        tenantId: m.tenantId,
+        storeName: m.storeName,
+        userName: m.user.name,
+        role: m.user.role,
+      })),
+      message: otpRes.message,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Step 2 Login WA OTP: Verifikasi 6-Digit OTP WhatsApp & Langsung Masuk ke Kasir
+apiRouter.post('/auth/login-wa-verify-otp', async (req: Request, res: Response) => {
+  try {
+    const { phone, otpCode, tenantId } = req.body;
+    const cleanPhone = normalizePhone(phone);
+    if (!cleanPhone || !otpCode) {
+      return res.status(400).json({ error: 'Nomor WhatsApp dan 6-digit Kode OTP wajib diisi' });
+    }
+
+    const verify = await WhatsAppOtpService.verifyOtp({
+      phone: cleanPhone,
+      otpCode: String(otpCode).trim(),
+      action: 'login',
+    });
+
+    if (!verify.valid) {
+      return res.status(401).json({ error: verify.error || 'Kode OTP WhatsApp tidak valid' });
+    }
+
+    const explicitTenant = (tenantId && String(tenantId).trim().toLowerCase() !== 'default')
+      ? resolveExistingTenantId(tenantId)
+      : null;
+
+    const matches = findTenantsByUserIdentifier(cleanPhone, explicitTenant);
+    if (matches.length === 0) {
+      return res.status(404).json({ error: 'Data akun toko tidak ditemukan untuk nomor WhatsApp ini' });
+    }
+
+    const matched = explicitTenant
+      ? (matches.find(m => m.tenantId === explicitTenant) || matches[0])
+      : (matches.find(m => m.tenantId !== 'default') || matches[0]);
+
+    if (matched.user.is_active === 0) {
+      return res.status(403).json({ error: 'Akun operator ini sedang dinonaktifkan oleh Owner Toko' });
+    }
+
+    const token = createAuthToken({
+      tenantId: matched.tenantId,
+      userId: matched.user.id,
+      username: matched.user.username,
+      role: matched.user.role,
+    });
+
+    res.json({
+      success: true,
+      token,
+      tenantId: matched.tenantId,
+      storeName: matched.storeName,
+      user: {
+        id: matched.user.id,
+        username: matched.user.username,
+        name: matched.user.name,
+        role: matched.user.role,
+        email: matched.user.email,
+        phone: matched.user.phone || cleanPhone,
+      },
+      message: `Selamat datang kembali di ${matched.storeName}!`,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// =========================================================================
+// JALUR 2: DAFTAR TOKO BARU DENGAN VERIFIKASI WHATSAPP OTP BAILEYS
+// =========================================================================
+
+// Step 1 Daftar Toko Baru: Validasi Data, Cek Duplikat Nomor WA, & Kirim OTP ke WhatsApp
+apiRouter.post('/auth/register-wa-send-otp', async (req: Request, res: Response) => {
+  try {
+    const { storeName, ownerName, phone, allowMultipleStores } = req.body;
+    if (!storeName || !ownerName || !phone) {
+      return res.status(400).json({ error: 'Nama toko, nama pemilik, dan Nomor WhatsApp wajib diisi' });
+    }
+
+    const cleanPhone = normalizePhone(phone);
+    if (cleanPhone.length < 9) {
+      return res.status(400).json({ error: 'Masukkan Nomor WhatsApp aktif yang valid (contoh: 081234567890)' });
+    }
+
+    // Cek apakah Nomor WhatsApp ini sudah terdaftar di toko yang ada (mencegah pendaftaran ganda tidak sengaja)
+    const existingMatches = findTenantsByUserIdentifier(cleanPhone);
+    if (existingMatches.length > 0 && !allowMultipleStores) {
+      const first = existingMatches[0];
+      return res.status(409).json({
+        error: `Nomor WhatsApp ${cleanPhone} sudah terdaftar sebagai pemilik di "${first.storeName}" (ID Toko: ${first.tenantId}). Silakan masuk lewat tab "Masuk Toko" atau gunakan fitur Lupa Sandi.`,
+        existingStore: {
+          tenantId: first.tenantId,
+          storeName: first.storeName,
+        },
+      });
+    }
+
+    const otpRes = await WhatsAppOtpService.sendOtp({
+      phone: cleanPhone,
+      action: 'register',
+      storeName: storeName.trim(),
+    });
+
+    if (!otpRes.success) {
+      return res.status(400).json({ error: otpRes.message });
+    }
+
+    res.json({
+      success: true,
+      phone: cleanPhone,
+      maskedPhone: otpRes.maskedPhone,
+      waConnected: otpRes.waConnected,
+      message: otpRes.message,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Step 2 Daftar Toko Baru: Verifikasi OTP WhatsApp, Buat Database Toko Terisolasi, & Kirim Arsip Kredensial ke WA
 apiRouter.post('/auth/register-store', async (req: Request, res: Response) => {
   try {
-    const { storeName, ownerName, username, phone, email, password, pin, autoProvisionPpob } = req.body;
-    if (!storeName || !ownerName || !password || !pin) {
-      return res.status(400).json({ error: 'Nama toko, nama pemilik, kata sandi, dan 6-digit PIN wajib diisi' });
+    const { storeName, ownerName, username, phone, email, password, pin, otpCode, autoProvisionPpob, allowMultipleStores } = req.body;
+    if (!storeName || !ownerName || !password || !pin || !phone) {
+      return res.status(400).json({ error: 'Nama toko, nama pemilik, Nomor WhatsApp, kata sandi, dan 6-digit PIN wajib diisi' });
     }
     if (password.length < 6) {
       return res.status(400).json({ error: 'Kata sandi minimal 6 karakter' });
@@ -174,6 +470,37 @@ apiRouter.post('/auth/register-store', async (req: Request, res: Response) => {
     const cleanPin = String(pin).trim();
     if (!/^\d{6}$/.test(cleanPin)) {
       return res.status(400).json({ error: 'PIN keamanan harus berupa 6 digit angka' });
+    }
+    const cleanPhone = normalizePhone(phone);
+    if (cleanPhone.length < 9) {
+      return res.status(400).json({ error: 'Nomor WhatsApp tidak valid' });
+    }
+
+    // Cek duplikasi nomor WA kecuali diizinkan eksplisit membuat cabang kedua
+    const existingMatches = findTenantsByUserIdentifier(cleanPhone);
+    if (existingMatches.length > 0 && !allowMultipleStores) {
+      const first = existingMatches[0];
+      return res.status(409).json({
+        error: `Nomor WhatsApp ${cleanPhone} sudah terdaftar di "${first.storeName}" (ID Toko: ${first.tenantId}). Silakan langsung Masuk Toko.`,
+      });
+    }
+
+    // Verifikasi Kode OTP WhatsApp
+    if (!otpCode || String(otpCode).trim().length < 4) {
+      return res.status(400).json({
+        error: 'Kode OTP WhatsApp 6-digit wajib diisi untuk memverifikasi nomor WhatsApp pemilik toko',
+        requiresOtp: true,
+      });
+    }
+
+    const verify = await WhatsAppOtpService.verifyOtp({
+      phone: cleanPhone,
+      otpCode: String(otpCode).trim(),
+      action: 'register',
+    });
+
+    if (!verify.valid) {
+      return res.status(401).json({ error: verify.error || 'Kode OTP WhatsApp salah atau sudah kedaluwarsa' });
     }
 
     const cleanUser = (username ? username.trim().toLowerCase().replace(/\s+/g, '') : 'owner') || 'owner';
@@ -191,11 +518,16 @@ apiRouter.post('/auth/register-store', async (req: Request, res: Response) => {
     const recoveryKey = generateRecoveryKey();
     const newTenantDb = getTenantDatabase(baseSlug, storeName.trim());
 
+    // Pastikan tidak ada akun default 'kasir1' (menutup celah backdoor)
+    try {
+      newTenantDb.prepare("DELETE FROM users WHERE username = 'kasir1'").run();
+    } catch {}
+
     // Update settings toko
     const upsertSetting = newTenantDb.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)');
     upsertSetting.run('store_name', storeName.trim());
     upsertSetting.run('tenant_id', baseSlug);
-    if (phone) upsertSetting.run('store_phone', phone.trim());
+    upsertSetting.run('store_phone', cleanPhone);
     if (email) upsertSetting.run('store_email', email.trim());
     upsertSetting.run('recovery_key', recoveryKey);
     upsertSetting.run('recovery_key_created_at', new Date().toISOString());
@@ -209,18 +541,18 @@ apiRouter.post('/auth/register-store', async (req: Request, res: Response) => {
         UPDATE users 
         SET username = ?, name = ?, email = ?, phone = ?, password = ?, pin = ?, is_active = 1
         WHERE id = ?
-      `).run(cleanUser, ownerName.trim(), email?.trim() || null, phone?.trim() || null, hashedPass, hashedPin, ownerUser.id);
+      `).run(cleanUser, ownerName.trim(), email?.trim() || null, cleanPhone, hashedPass, hashedPin, ownerUser.id);
     } else {
       newTenantDb.prepare(`
         INSERT INTO users (username, password, name, role, pin, email, phone, is_active)
         VALUES (?, ?, ?, 'owner', ?, ?, ?, 1)
-      `).run(cleanUser, hashedPass, ownerName.trim(), hashedPin, email?.trim() || null, phone?.trim() || null);
+      `).run(cleanUser, hashedPass, ownerName.trim(), hashedPin, email?.trim() || null, cleanPhone);
       ownerUser = newTenantDb.prepare("SELECT id FROM users WHERE role = 'owner' LIMIT 1").get() as any;
     }
 
-    // Jika user mencentang pengajuan otomatis jalur PPOB ipay.my.id & mengisi nomor HP
+    // Jika user mencentang pengajuan otomatis jalur PPOB ipay.my.id
     let provisionResult: any = null;
-    if (autoProvisionPpob !== false && phone && String(phone).trim().length >= 8) {
+    if (autoProvisionPpob !== false) {
       try {
         provisionResult = await new Promise((resolve) => {
           tenantContext.run({ tenantId: baseSlug, db: newTenantDb }, async () => {
@@ -228,17 +560,31 @@ apiRouter.post('/auth/register-store', async (req: Request, res: Response) => {
               const r = await PPOBService.requestAutoProvision({
                 storeName: storeName.trim(),
                 ownerName: ownerName.trim(),
-                phone: String(phone).trim(),
+                phone: cleanPhone,
                 tenantId: baseSlug,
               });
               resolve(r);
-            } catch (e) {
+            } catch {
               resolve(null);
             }
           });
         });
       } catch {}
     }
+
+    // Kirim Pesan Arsip Selamat Datang & Kode Pemulihan Darurat ke WhatsApp Pemilik
+    const welcomeWaMessage =
+      `🎉 *SELAMAT! TOKO POS IPAY ANDA TELAH AKTIF*\n\n` +
+      `Berikut adalah detail akses toko Anda (simpan pesan ini):\n` +
+      `• *Nama Toko*: ${storeName.trim()}\n` +
+      `• *ID Toko*: \`${baseSlug}\`\n` +
+      `• *Login No. WA*: \`${cleanPhone}\`\n` +
+      `• *Username*: \`${cleanUser}\`\n` +
+      `• *Kode Pemulihan Darurat*: *${recoveryKey}*\n\n` +
+      `🔗 *Login Kasir*: https://ipaypos.my.id\n` +
+      `_Gunakan Nomor WhatsApp Anda untuk login cepat atau memulihkan kata sandi/PIN kapan saja._`;
+
+    WhatsAppOtpService.sendMessage(cleanPhone, welcomeWaMessage).catch(() => {});
 
     const token = createAuthToken({
       tenantId: baseSlug,
@@ -260,9 +606,9 @@ apiRouter.post('/auth/register-store', async (req: Request, res: Response) => {
         name: ownerName.trim(),
         role: 'owner',
         email: email?.trim(),
-        phone: phone?.trim(),
+        phone: cleanPhone,
       },
-      message: `Toko "${storeName}" berhasil didaftarkan! Simpan kode pemulihan Anda.`,
+      message: `Toko "${storeName}" berhasil didaftarkan! Detail login & Kode Pemulihan juga telah dikirim ke WhatsApp Anda.`,
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -682,149 +1028,351 @@ apiRouter.post('/auth/change-pin', (req: Request, res: Response) => {
   }
 });
 
-// Pemulihan Akun Skema 1: Lupa Password (Reset Menggunakan 6-Digit PIN Keamanan)
-apiRouter.post('/auth/recover-password-with-pin', (req: Request, res: Response) => {
+// =========================================================================
+// JALUR 3: PUSAT PEMULIHAN AKUN (LUPA PASSWORD / LUPA PIN VIA WA OTP BAILEYS & RECOVERY KEY)
+// =========================================================================
+
+// Step 1 Pemulihan via WhatsApp OTP: Kirim 6-Digit OTP ke Nomor WhatsApp Terdaftar
+apiRouter.post('/auth/recovery-wa-send-otp', async (req: Request, res: Response) => {
   try {
-    const { tenantId, username, pin, newPassword } = req.body;
-    if (!username || !pin || !newPassword) {
-      return res.status(400).json({ error: 'Username/No HP, PIN 6-digit, dan kata sandi baru wajib diisi' });
+    const { tenantId, phoneOrUsername, action } = req.body;
+    if (!phoneOrUsername) {
+      return res.status(400).json({ error: 'Masukkan Nomor WhatsApp atau Username/ID Toko Anda' });
     }
-    if (newPassword.length < 6) {
-      return res.status(400).json({ error: 'Kata sandi baru minimal 6 karakter' });
-    }
-    const cleanPin = String(pin).trim();
-    const tId = sanitizeTenantId(tenantId || 'default');
-    let targetDb = getTenantDatabase(tId);
-    const cleanInput = username.trim().toLowerCase();
 
-    let user = targetDb.prepare(`
-      SELECT id, username, pin, role FROM users 
-      WHERE LOWER(username) = ? 
-         OR (email IS NOT NULL AND LOWER(email) = ?) 
-         OR (phone IS NOT NULL AND phone = ?)
-         OR (? = 'owner' AND role = 'owner')
-      LIMIT 1
-    `).get(cleanInput, cleanInput, cleanInput, cleanInput) as any;
+    const explicitTenant = (tenantId && String(tenantId).trim().toLowerCase() !== 'default')
+      ? resolveExistingTenantId(tenantId)
+      : null;
 
-    if (!user) {
-      const allTenants = getAllTenantIds();
-      for (const otherTId of allTenants) {
-        if (otherTId === tId) continue;
-        const otherDb = getTenantDatabase(otherTId);
-        const match = otherDb.prepare(`
-          SELECT id, username, pin, role FROM users 
-          WHERE LOWER(username) = ? 
-             OR (email IS NOT NULL AND LOWER(email) = ?) 
-             OR (phone IS NOT NULL AND phone = ?)
-             OR (? = 'owner' AND role = 'owner')
-          LIMIT 1
-        `).get(cleanInput, cleanInput, cleanInput, cleanInput) as any;
-        if (match) {
-          user = match;
-          targetDb = otherDb;
-          break;
+    // Cari akun berdasarkan Nomor WA / Username / Nama Toko
+    let matches = findTenantsByUserIdentifier(String(phoneOrUsername).trim(), explicitTenant);
+
+    // Jika tidak ketemu dari user identifier tetapi user mengetik nama toko / ID toko di kolom tersebut
+    if (matches.length === 0) {
+      const maybeTenant = resolveExistingTenantId(String(phoneOrUsername).trim()) || explicitTenant;
+      if (maybeTenant && maybeTenant !== 'default') {
+        const tDb = getTenantDatabase(maybeTenant);
+        const storeNameRow = tDb.prepare("SELECT value FROM settings WHERE key = 'store_name'").get() as any;
+        const storePhoneRow = tDb.prepare("SELECT value FROM settings WHERE key = 'store_phone'").get() as any;
+        const ownerUser = tDb.prepare("SELECT * FROM users WHERE role = 'owner' LIMIT 1").get() as any;
+        if (ownerUser) {
+          matches = [{
+            tenantId: maybeTenant,
+            storeName: storeNameRow?.value || `Toko ${maybeTenant}`,
+            storePhone: ownerUser.phone || storePhoneRow?.value || '',
+            user: ownerUser,
+          }];
         }
       }
     }
 
-    if (!user) {
-      return res.status(404).json({ error: 'Akun dengan username atau No HP tersebut tidak ditemukan' });
+    if (matches.length === 0) {
+      return res.status(404).json({
+        error: 'Akun dengan Nomor WhatsApp / Username tersebut tidak ditemukan. Periksa kembali nomor Anda atau gunakan tab Kode Pemulihan Darurat.',
+      });
     }
 
-    if (!user.pin || !verifySecret(cleanPin, user.pin)) {
-      return res.status(401).json({ error: '6-Digit PIN Keamanan Toko tidak cocok' });
+    const matched = explicitTenant
+      ? (matches.find(m => m.tenantId === explicitTenant) || matches[0])
+      : (matches.find(m => m.tenantId !== 'default') || matches[0]);
+
+    const targetPhone = normalizePhone(matched.user.phone || matched.storePhone);
+    if (!targetPhone || targetPhone.length < 8) {
+      return res.status(400).json({
+        error: `Toko "${matched.storeName}" belum memiliki Nomor WhatsApp terdaftar. Silakan gunakan tab "Kode Darurat (RCV)" untuk memulihkan akun.`,
+      });
     }
 
-    targetDb.prepare('UPDATE users SET password = ? WHERE id = ?').run(hashSecret(newPassword), user.id);
-    res.json({ success: true, message: 'Kata sandi berhasil diperbarui! Silakan masuk dengan kata sandi baru Anda.' });
+    const otpAction = action === 'reset_pin' ? 'reset_pin' : 'reset_password';
+    const otpRes = await WhatsAppOtpService.sendOtp({
+      phone: targetPhone,
+      action: otpAction,
+      storeName: matched.storeName,
+      tenantId: matched.tenantId,
+    });
+
+    if (!otpRes.success) {
+      return res.status(400).json({ error: otpRes.message });
+    }
+
+    res.json({
+      success: true,
+      tenantId: matched.tenantId,
+      storeName: matched.storeName,
+      userName: matched.user.name,
+      maskedPhone: otpRes.maskedPhone,
+      waConnected: otpRes.waConnected,
+      message: `Kode OTP 6-digit untuk pemulihan akun "${matched.storeName}" telah dikirim ke WhatsApp ${otpRes.maskedPhone}.`,
+    });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Pemulihan Akun Skema 1: Lupa PIN Keamanan (Reset Menggunakan Kata Sandi Akun)
-apiRouter.post('/auth/recover-pin-with-password', (req: Request, res: Response) => {
+// Step 2 Pemulihan via WhatsApp OTP: Verifikasi OTP & Simpan Password Baru dan/atau PIN Baru
+apiRouter.post('/auth/recovery-wa-reset', async (req: Request, res: Response) => {
   try {
-    const { tenantId, username, password, newPin } = req.body;
+    const { tenantId, phoneOrUsername, otpCode, action, newPassword, newPin } = req.body;
+    if (!phoneOrUsername || !otpCode) {
+      return res.status(400).json({ error: 'Nomor WhatsApp dan 6-digit Kode OTP wajib diisi' });
+    }
+    if (!newPassword && !newPin) {
+      return res.status(400).json({ error: 'Harap isi Kata Sandi baru atau 6-Digit PIN baru' });
+    }
+    if (newPassword && String(newPassword).length < 6) {
+      return res.status(400).json({ error: 'Kata sandi baru minimal 6 karakter' });
+    }
+    if (newPin && !/^\d{6}$/.test(String(newPin).trim())) {
+      return res.status(400).json({ error: 'PIN keamanan baru harus terdiri dari 6 digit angka' });
+    }
+
+    const explicitTenant = (tenantId && String(tenantId).trim().toLowerCase() !== 'default')
+      ? resolveExistingTenantId(tenantId)
+      : null;
+
+    let matches = findTenantsByUserIdentifier(String(phoneOrUsername).trim(), explicitTenant);
+    if (matches.length === 0 && explicitTenant) {
+      const tDb = getTenantDatabase(explicitTenant);
+      const storeNameRow = tDb.prepare("SELECT value FROM settings WHERE key = 'store_name'").get() as any;
+      const storePhoneRow = tDb.prepare("SELECT value FROM settings WHERE key = 'store_phone'").get() as any;
+      const ownerUser = tDb.prepare("SELECT * FROM users WHERE role = 'owner' LIMIT 1").get() as any;
+      if (ownerUser) {
+        matches = [{
+          tenantId: explicitTenant,
+          storeName: storeNameRow?.value || `Toko ${explicitTenant}`,
+          storePhone: ownerUser.phone || storePhoneRow?.value || '',
+          user: ownerUser,
+        }];
+      }
+    }
+
+    if (matches.length === 0) {
+      return res.status(404).json({ error: 'Akun toko tidak ditemukan' });
+    }
+
+    const matched = explicitTenant
+      ? (matches.find(m => m.tenantId === explicitTenant) || matches[0])
+      : (matches.find(m => m.tenantId !== 'default') || matches[0]);
+
+    const targetPhone = normalizePhone(matched.user.phone || matched.storePhone);
+    const otpAction = action === 'reset_pin' ? 'reset_pin' : 'reset_password';
+
+    const verify = await WhatsAppOtpService.verifyOtp({
+      phone: targetPhone,
+      otpCode: String(otpCode).trim(),
+      action: otpAction,
+    });
+
+    if (!verify.valid) {
+      return res.status(401).json({ error: verify.error || 'Kode OTP WhatsApp tidak valid atau sudah kedaluwarsa' });
+    }
+
+    const targetDb = getTenantDatabase(matched.tenantId);
+    if (newPassword) {
+      targetDb.prepare('UPDATE users SET password = ? WHERE id = ?').run(hashSecret(newPassword), matched.user.id);
+    }
+    if (newPin) {
+      targetDb.prepare('UPDATE users SET pin = ? WHERE id = ?').run(hashSecret(String(newPin).trim()), matched.user.id);
+    }
+
+    res.json({
+      success: true,
+      tenantId: matched.tenantId,
+      storeName: matched.storeName,
+      message: `Berhasil! ${newPassword && newPin ? 'Kata sandi & PIN' : newPassword ? 'Kata sandi' : '6-Digit PIN'} untuk toko "${matched.storeName}" telah diperbarui.`,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Pemulihan via Kombinasi PIN + OTP/RecoveryKey (Mencegah Bypass 2FA Hanya Modal Intip PIN!)
+apiRouter.post('/auth/recover-password-with-pin', async (req: Request, res: Response) => {
+  try {
+    const { tenantId, username, pin, newPassword, otpCode, recoveryKey } = req.body;
+    if (!username || !pin || !newPassword) {
+      return res.status(400).json({ error: 'Nomor WA/Username, PIN 6-digit, dan kata sandi baru wajib diisi' });
+    }
+    if (newPassword.length < 6) {
+      return res.status(400).json({ error: 'Kata sandi baru minimal 6 karakter' });
+    }
+
+    const explicitTenant = (tenantId && String(tenantId).trim().toLowerCase() !== 'default')
+      ? resolveExistingTenantId(tenantId)
+      : null;
+
+    const matches = findTenantsByUserIdentifier(String(username).trim(), explicitTenant);
+    const matched = explicitTenant
+      ? matches.find(m => m.tenantId === explicitTenant)
+      : (matches.find(m => m.tenantId !== 'default') || matches[0]);
+
+    if (!matched) {
+      return res.status(404).json({ error: 'Akun dengan Nomor WA / Username tersebut tidak ditemukan' });
+    }
+
+    const rl = checkAuthRateLimit(`recover_pw:${matched.tenantId}:${matched.user.id}`, 5, 3 * 60 * 1000);
+    if (!rl.allowed) {
+      return res.status(429).json({ error: `Terlalu banyak percobaan gagal. Silakan tunggu ${rl.retryAfterSec} detik.` });
+    }
+
+    const cleanPin = String(pin).trim();
+    if (!matched.user.pin || !verifySecret(cleanPin, matched.user.pin)) {
+      return res.status(401).json({ error: '6-Digit PIN Keamanan Toko tidak cocok' });
+    }
+
+    // Wajib verifikasi faktor ke-2 (Kode OTP WhatsApp ATAU Kode Pemulihan Darurat) agar PIN yang diintip tidak bisa membobol Password!
+    const targetDb = getTenantDatabase(matched.tenantId);
+    const targetPhone = normalizePhone(matched.user.phone || matched.storePhone);
+
+    if (otpCode) {
+      const v = await WhatsAppOtpService.verifyOtp({
+        phone: targetPhone,
+        otpCode: String(otpCode).trim(),
+        action: 'reset_password',
+      });
+      if (!v.valid) {
+        return res.status(401).json({ error: v.error || 'Kode OTP WhatsApp tidak cocok' });
+      }
+    } else if (recoveryKey) {
+      const storedKeyRow = targetDb.prepare("SELECT value FROM settings WHERE key = 'recovery_key'").get() as any;
+      if (!storedKeyRow?.value || storedKeyRow.value.toUpperCase() !== String(recoveryKey).trim().toUpperCase()) {
+        return res.status(401).json({ error: 'Kode Pemulihan Darurat tidak cocok' });
+      }
+    } else {
+      return res.status(400).json({
+        error: 'Demi keamanan 2-Lapis, reset kata sandi wajib disertai Kode OTP WhatsApp atau Kode Pemulihan Darurat.',
+      });
+    }
+
+    targetDb.prepare('UPDATE users SET password = ? WHERE id = ?').run(hashSecret(newPassword), matched.user.id);
+    res.json({
+      success: true,
+      tenantId: matched.tenantId,
+      storeName: matched.storeName,
+      message: 'Kata sandi berhasil diperbarui! Silakan masuk dengan kata sandi baru Anda.',
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Pemulihan PIN Keamanan (Wajib disertai OTP WhatsApp atau Recovery Key agar Password saja tidak mem-bypass 2FA PIN!)
+apiRouter.post('/auth/recover-pin-with-password', async (req: Request, res: Response) => {
+  try {
+    const { tenantId, username, password, newPin, otpCode, recoveryKey } = req.body;
     if (!username || !password || !newPin) {
-      return res.status(400).json({ error: 'Username/No HP, kata sandi, dan PIN baru wajib diisi' });
+      return res.status(400).json({ error: 'Nomor WA/Username, kata sandi, dan PIN baru wajib diisi' });
     }
     const cleanPin = String(newPin).trim();
     if (!/^\d{6}$/.test(cleanPin)) {
       return res.status(400).json({ error: 'PIN baru harus berupa 6 digit angka' });
     }
 
-    const tId = sanitizeTenantId(tenantId || 'default');
-    let targetDb = getTenantDatabase(tId);
-    const cleanInput = username.trim().toLowerCase();
+    const explicitTenant = (tenantId && String(tenantId).trim().toLowerCase() !== 'default')
+      ? resolveExistingTenantId(tenantId)
+      : null;
 
-    let user = targetDb.prepare(`
-      SELECT id, username, password, role FROM users 
-      WHERE LOWER(username) = ? 
-         OR (email IS NOT NULL AND LOWER(email) = ?) 
-         OR (phone IS NOT NULL AND phone = ?)
-         OR (? = 'owner' AND role = 'owner')
-      LIMIT 1
-    `).get(cleanInput, cleanInput, cleanInput, cleanInput) as any;
+    const matches = findTenantsByUserIdentifier(String(username).trim(), explicitTenant);
+    const matched = explicitTenant
+      ? matches.find(m => m.tenantId === explicitTenant)
+      : (matches.find(m => m.tenantId !== 'default') || matches[0]);
 
-    if (!user) {
-      const allTenants = getAllTenantIds();
-      for (const otherTId of allTenants) {
-        if (otherTId === tId) continue;
-        const otherDb = getTenantDatabase(otherTId);
-        const match = otherDb.prepare(`
-          SELECT id, username, password, role FROM users 
-          WHERE LOWER(username) = ? 
-             OR (email IS NOT NULL AND LOWER(email) = ?) 
-             OR (phone IS NOT NULL AND phone = ?)
-             OR (? = 'owner' AND role = 'owner')
-          LIMIT 1
-        `).get(cleanInput, cleanInput, cleanInput, cleanInput) as any;
-        if (match) {
-          user = match;
-          targetDb = otherDb;
-          break;
-        }
-      }
+    if (!matched) {
+      return res.status(404).json({ error: 'Akun dengan Nomor WA / Username tersebut tidak ditemukan' });
     }
 
-    if (!user) {
-      return res.status(404).json({ error: 'Akun dengan username atau No HP tersebut tidak ditemukan' });
+    const rl = checkAuthRateLimit(`recover_pin:${matched.tenantId}:${matched.user.id}`, 5, 3 * 60 * 1000);
+    if (!rl.allowed) {
+      return res.status(429).json({ error: `Terlalu banyak percobaan gagal. Silakan tunggu ${rl.retryAfterSec} detik.` });
     }
 
-    if (!verifySecret(password, user.password)) {
+    if (!verifySecret(password, matched.user.password)) {
       return res.status(401).json({ error: 'Kata sandi akun salah' });
     }
 
-    targetDb.prepare('UPDATE users SET pin = ? WHERE id = ?').run(hashSecret(cleanPin), user.id);
-    res.json({ success: true, message: 'PIN Keamanan Toko berhasil diperbarui! Silakan gunakan PIN 6-digit baru.' });
+    const targetDb = getTenantDatabase(matched.tenantId);
+    const targetPhone = normalizePhone(matched.user.phone || matched.storePhone);
+
+    if (otpCode) {
+      const v = await WhatsAppOtpService.verifyOtp({
+        phone: targetPhone,
+        otpCode: String(otpCode).trim(),
+        action: 'reset_pin',
+      });
+      if (!v.valid) {
+        return res.status(401).json({ error: v.error || 'Kode OTP WhatsApp tidak cocok' });
+      }
+    } else if (recoveryKey) {
+      const storedKeyRow = targetDb.prepare("SELECT value FROM settings WHERE key = 'recovery_key'").get() as any;
+      if (!storedKeyRow?.value || storedKeyRow.value.toUpperCase() !== String(recoveryKey).trim().toUpperCase()) {
+        return res.status(401).json({ error: 'Kode Pemulihan Darurat tidak cocok' });
+      }
+    } else {
+      return res.status(400).json({
+        error: 'Demi keamanan 2-Lapis, reset PIN wajib disertai Kode OTP WhatsApp atau Kode Pemulihan Darurat.',
+      });
+    }
+
+    targetDb.prepare('UPDATE users SET pin = ? WHERE id = ?').run(hashSecret(cleanPin), matched.user.id);
+    res.json({
+      success: true,
+      tenantId: matched.tenantId,
+      storeName: matched.storeName,
+      message: 'PIN Keamanan Toko berhasil diperbarui! Silakan gunakan PIN 6-digit baru.',
+    });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Pemulihan Darurat Skema 1: Reset Password & PIN Menggunakan Master Recovery Key
+// Pemulihan Darurat: Reset Password & PIN Menggunakan Master Recovery Key (RCV-XXXX-XXXX-XXXX)
 apiRouter.post('/auth/recover-with-key', (req: Request, res: Response) => {
   try {
     const { tenantId, recoveryKey, newPassword, newPin } = req.body;
-    if (!tenantId || !recoveryKey) {
-      return res.status(400).json({ error: 'ID Toko dan Kode Pemulihan Darurat wajib diisi' });
+    if (!recoveryKey) {
+      return res.status(400).json({ error: 'Kode Pemulihan Darurat (RCV-XXXX-XXXX-XXXX) wajib diisi' });
     }
     if (!newPassword && !newPin) {
       return res.status(400).json({ error: 'Masukkan kata sandi baru atau PIN baru untuk dipulihkan' });
     }
 
-    const tId = sanitizeTenantId(tenantId);
-    const targetDb = getTenantDatabase(tId);
-
-    const storedKeyRow = targetDb.prepare("SELECT value FROM settings WHERE key = 'recovery_key'").get() as any;
-    const cleanKey = String(recoveryKey).trim().toUpperCase();
-
-    if (!storedKeyRow || !storedKeyRow.value || storedKeyRow.value.toUpperCase() !== cleanKey) {
-      return res.status(401).json({ error: 'Kode Pemulihan Darurat tidak cocok untuk toko ini' });
+    const clientIp = String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown');
+    const rl = checkAuthRateLimit(`recover_key:${clientIp}`, 5, 5 * 60 * 1000);
+    if (!rl.allowed) {
+      return res.status(429).json({
+        error: `Terlalu banyak percobaan Kode Pemulihan gagal. Silakan tunggu ${rl.retryAfterSec} detik.`,
+      });
     }
 
-    const ownerUser = targetDb.prepare("SELECT id FROM users WHERE role = 'owner' LIMIT 1").get() as any;
+    const cleanKey = String(recoveryKey).trim().toUpperCase();
+
+    // Cari toko berdasarkan input (Nama Toko, ID Toko, No WA) ATAU cari toko yang memiliki recovery_key tersebut!
+    let resolvedTId = tenantId ? resolveExistingTenantId(tenantId) : null;
+    if (!resolvedTId && tenantId) {
+      const byUser = findTenantsByUserIdentifier(String(tenantId).trim());
+      if (byUser.length > 0) resolvedTId = byUser[0].tenantId;
+    }
+
+    // Jika masih belum ketemu atau recovery_key di default tidak cocok, cari di seluruh tenant yang punya recovery_key = cleanKey
+    let matchedTenantId: string | null = null;
+    const candidateIds = resolvedTId ? [resolvedTId, ...getAllTenantIds().filter(id => id !== resolvedTId)] : getAllTenantIds();
+    for (const id of candidateIds) {
+      try {
+        const tDb = getTenantDatabase(id);
+        const row = tDb.prepare("SELECT value FROM settings WHERE key = 'recovery_key'").get() as any;
+        if (row?.value && String(row.value).trim().toUpperCase() === cleanKey) {
+          matchedTenantId = id;
+          break;
+        }
+      } catch {}
+    }
+
+    if (!matchedTenantId) {
+      return res.status(401).json({ error: 'Kode Pemulihan Darurat tidak cocok dengan toko mana pun' });
+    }
+
+    const targetDb = getTenantDatabase(matchedTenantId);
+    const ownerUser = targetDb.prepare("SELECT id, phone FROM users WHERE role = 'owner' LIMIT 1").get() as any;
     if (!ownerUser) {
       return res.status(404).json({ error: 'Akun Owner tidak ditemukan di database toko' });
     }
@@ -843,11 +1391,31 @@ apiRouter.post('/auth/recover-with-key', (req: Request, res: Response) => {
     // Terbitkan recovery key baru demi keamanan
     const nextKey = generateRecoveryKey();
     targetDb.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('recovery_key', ?)").run(nextKey);
+    targetDb.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('recovery_key_created_at', ?)").run(new Date().toISOString());
+
+    const storeNameRow = targetDb.prepare("SELECT value FROM settings WHERE key = 'store_name'").get() as any;
+    const storePhoneRow = targetDb.prepare("SELECT value FROM settings WHERE key = 'store_phone'").get() as any;
+    const storeName = storeNameRow?.value || `Toko ${matchedTenantId}`;
+    const ownerPhone = normalizePhone(ownerUser.phone || storePhoneRow?.value || '');
+
+    if (ownerPhone) {
+      WhatsAppOtpService.sendMessage(
+        ownerPhone,
+        `🔐 *[PEMULIHAN DARURAT TOKO ${storeName.toUpperCase()}]*\n\n` +
+        `Akses toko Anda (\`${matchedTenantId}\`) baru saja dipulihkan.\n` +
+        `Kode Pemulihan Darurat Baru Anda:\n*${nextKey}*\n\n` +
+        `_Simpan kode baru ini di tempat yang aman._`
+      ).catch(() => {});
+    }
+
+    resetAuthRateLimit(`recover_key:${clientIp}`);
 
     res.json({
       success: true,
+      tenantId: matchedTenantId,
+      storeName,
       newRecoveryKey: nextKey,
-      message: 'Akses akun toko berhasil dipulihkan! Catat kode pemulihan baru Anda.',
+      message: `Akses akun "${storeName}" (ID: ${matchedTenantId}) berhasil dipulihkan! Simpan Kode Pemulihan baru Anda.`,
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -877,15 +1445,23 @@ apiRouter.get('/auth/recovery-info', (req: Request, res: Response) => {
 });
 
 
-// Kompatibilitas Endpoint Lama: Login Kredensial Langsung
+// Kompatibilitas Endpoint Lama (Dilindungi Rate Limit & Verifikasi PIN)
 apiRouter.post('/auth/login', (req: Request, res: Response) => {
-  const { username, password } = req.body;
+  const { username, password, pin } = req.body;
+  const clientIp = String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown');
+  const rl = checkAuthRateLimit(`legacy_login:${clientIp}`, 6, 3 * 60 * 1000);
+  if (!rl.allowed) {
+    return res.status(429).json({ error: `Terlalu banyak percobaan login. Tunggu ${rl.retryAfterSec} detik.` });
+  }
   const user = db.prepare('SELECT id, username, password, name, role, pin, is_active FROM users WHERE username = ?').get(username) as any;
   if (!user || !verifySecret(password, user.password)) {
     return res.status(401).json({ error: 'Username atau password salah' });
   }
   if (user.is_active === 0) {
     return res.status(403).json({ error: 'Akun operator ini telah dinonaktifkan oleh Administrator' });
+  }
+  if (user.pin && pin && !verifySecret(String(pin).trim(), user.pin)) {
+    return res.status(401).json({ error: 'PIN keamanan salah' });
   }
   const tenantId = req.tenantId || 'default';
   const token = createAuthToken({ tenantId, userId: user.id, username: user.username, role: user.role });
@@ -894,6 +1470,11 @@ apiRouter.post('/auth/login', (req: Request, res: Response) => {
 
 apiRouter.post('/auth/login-pin', (req: Request, res: Response) => {
   const { pin } = req.body;
+  const clientIp = String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown');
+  const rl = checkAuthRateLimit(`legacy_pin:${clientIp}`, 5, 3 * 60 * 1000);
+  if (!rl.allowed) {
+    return res.status(429).json({ error: `Terlalu banyak percobaan PIN. Tunggu ${rl.retryAfterSec} detik.` });
+  }
   const allUsers = db.prepare('SELECT id, username, name, role, pin, is_active FROM users').all() as any[];
   const user = allUsers.find(u => verifySecret(pin, u.pin));
   if (!user) {

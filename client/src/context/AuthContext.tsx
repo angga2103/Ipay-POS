@@ -13,6 +13,8 @@ interface AuthContextType {
     success: boolean;
     requiresPin?: boolean;
     requiresOtp?: boolean;
+    requiresStoreSelection?: boolean;
+    stores?: { tenantId: string; storeName: string; userName: string; role: string }[];
     tempSessionToken?: string;
     maskedEmail?: string;
     tenantId?: string;
@@ -35,6 +37,42 @@ interface AuthContextType {
     storeName?: string;
     error?: string;
   }>;
+  loginWaSendOtp: (phone: string, tenantId?: string) => Promise<{
+    success: boolean;
+    requiresStoreSelection?: boolean;
+    stores?: { tenantId: string; storeName: string; userName: string; role: string }[];
+    tenantId?: string;
+    storeName?: string;
+    userName?: string;
+    maskedPhone?: string;
+    sentViaWhatsapp?: boolean;
+    fallbackTelegram?: boolean;
+    message?: string;
+    error?: string;
+  }>;
+  loginWaVerifyOtp: (phone: string, otpCode: string, tenantId?: string) => Promise<{
+    success: boolean;
+    user?: User;
+    token?: string;
+    tenantId?: string;
+    storeName?: string;
+    message?: string;
+    error?: string;
+  }>;
+  registerWaSendOtp: (data: {
+    storeName: string;
+    ownerName: string;
+    phone: string;
+    allowMultipleStores?: boolean;
+  }) => Promise<{
+    success: boolean;
+    existingStore?: { tenantId: string; storeName: string };
+    maskedPhone?: string;
+    sentViaWhatsapp?: boolean;
+    fallbackTelegram?: boolean;
+    message?: string;
+    error?: string;
+  }>;
   registerStoreDirect: (data: {
     storeName: string;
     ownerName: string;
@@ -43,6 +81,8 @@ interface AuthContextType {
     email?: string;
     password: string;
     pin: string;
+    otpCode?: string;
+    allowMultipleStores?: boolean;
     autoProvisionPpob?: boolean;
   }) => Promise<{
     success: boolean;
@@ -50,8 +90,10 @@ interface AuthContextType {
     token?: string;
     tenantId?: string;
     storeName?: string;
+    loginPhone?: string;
     recoveryKey?: string;
     provisionResult?: any;
+    existingStore?: { tenantId: string; storeName: string };
     message?: string;
     error?: string;
   }>;
@@ -77,11 +119,46 @@ interface AuthContextType {
     message?: string;
     error?: string;
   }>;
+  recoveryWaSendOtp: (data: {
+    phoneOrUsername: string;
+    tenantId?: string;
+    action?: 'reset_password' | 'reset_pin';
+  }) => Promise<{
+    success: boolean;
+    requiresStoreSelection?: boolean;
+    stores?: { tenantId: string; storeName: string; userName: string; role: string }[];
+    tenantId?: string;
+    storeName?: string;
+    userName?: string;
+    maskedPhone?: string;
+    sentViaWhatsapp?: boolean;
+    fallbackTelegram?: boolean;
+    message?: string;
+    error?: string;
+  }>;
+  recoveryWaReset: (data: {
+    phoneOrUsername: string;
+    tenantId?: string;
+    otpCode: string;
+    action?: string;
+    newPassword?: string;
+    newPin?: string;
+  }) => Promise<{
+    success: boolean;
+    tenantId?: string;
+    storeName?: string;
+    username?: string;
+    phone?: string;
+    message?: string;
+    error?: string;
+  }>;
   recoverPasswordWithPin: (data: {
     tenantId: string;
     username: string;
     pin: string;
     newPassword: string;
+    otpCode?: string;
+    recoveryKey?: string;
   }) => Promise<{
     success: boolean;
     message?: string;
@@ -92,18 +169,24 @@ interface AuthContextType {
     username: string;
     password: string;
     newPin: string;
+    otpCode?: string;
+    recoveryKey?: string;
   }) => Promise<{
     success: boolean;
     message?: string;
     error?: string;
   }>;
   recoverWithKey: (data: {
-    tenantId: string;
+    tenantId?: string;
     recoveryKey: string;
     newPassword?: string;
     newPin?: string;
   }) => Promise<{
     success: boolean;
+    tenantId?: string;
+    storeName?: string;
+    username?: string;
+    phone?: string;
     newRecoveryKey?: string;
     message?: string;
     error?: string;
@@ -489,6 +572,75 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
+  const loginWaSendOtp = async (phone: string, targetTenantId?: string) => {
+    try {
+      const res = await fetch('/api/auth/login-wa-send-otp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phone, tenantId: targetTenantId }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        return { success: false, error: data.error || 'Gagal mengirim OTP WhatsApp' };
+      }
+      return data;
+    } catch (err: any) {
+      return { success: false, error: err.message || 'Koneksi ke server terputus' };
+    }
+  };
+
+  const loginWaVerifyOtp = async (phone: string, otpCode: string, targetTenantId?: string) => {
+    try {
+      const res = await fetch('/api/auth/login-wa-verify-otp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phone, otpCode, tenantId: targetTenantId }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        return { success: false, error: data.error || 'Kode OTP WhatsApp tidak valid' };
+      }
+
+      localStorage.setItem('pos_tenant_id', data.tenantId);
+      if (data.token) localStorage.setItem('pos_auth_token', data.token);
+      localStorage.setItem('pos_user', JSON.stringify(data.user));
+
+      setTenantIdState(data.tenantId);
+      if (data.storeName) setStoreName(data.storeName);
+      setCurrentUser(data.user);
+
+      return data;
+    } catch (err: any) {
+      return { success: false, error: err.message || 'Gagal memverifikasi OTP WhatsApp' };
+    }
+  };
+
+  const registerWaSendOtp = async (payload: {
+    storeName: string;
+    ownerName: string;
+    phone: string;
+    allowMultipleStores?: boolean;
+  }) => {
+    try {
+      const res = await fetch('/api/auth/register-wa-send-otp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        return {
+          success: false,
+          existingStore: data.existingStore,
+          error: data.error || 'Gagal mengirim kode OTP WhatsApp',
+        };
+      }
+      return data;
+    } catch (err: any) {
+      return { success: false, error: err.message || 'Koneksi ke server terputus' };
+    }
+  };
+
   const registerStoreDirect = async (payload: {
     storeName: string;
     ownerName: string;
@@ -497,6 +649,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     email?: string;
     password: string;
     pin: string;
+    otpCode?: string;
+    allowMultipleStores?: boolean;
     autoProvisionPpob?: boolean;
   }) => {
     try {
@@ -507,7 +661,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       });
       const data = await res.json();
       if (!res.ok || !data.success) {
-        return { success: false, error: data.error || 'Pendaftaran toko gagal' };
+        return {
+          success: false,
+          existingStore: data.existingStore,
+          error: data.error || 'Pendaftaran toko gagal',
+        };
       }
 
       // Jangan panggil setCurrentUser di sini agar modal sukses registrasi & Master Recovery Key sempat tampil di LoginPage
@@ -523,11 +681,58 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
+  const recoveryWaSendOtp = async (payload: {
+    phoneOrUsername: string;
+    tenantId?: string;
+    action?: 'reset_password' | 'reset_pin';
+  }) => {
+    try {
+      const res = await fetch('/api/auth/recovery-wa-send-otp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        return { success: false, error: data.error || 'Gagal mengirim OTP pemulihan ke WhatsApp' };
+      }
+      return data;
+    } catch (err: any) {
+      return { success: false, error: err.message || 'Koneksi ke server terputus' };
+    }
+  };
+
+  const recoveryWaReset = async (payload: {
+    phoneOrUsername: string;
+    tenantId?: string;
+    otpCode: string;
+    action?: string;
+    newPassword?: string;
+    newPin?: string;
+  }) => {
+    try {
+      const res = await fetch('/api/auth/recovery-wa-reset', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        return { success: false, error: data.error || 'Gagal menyetel ulang kredensial akun' };
+      }
+      return data;
+    } catch (err: any) {
+      return { success: false, error: err.message || 'Koneksi ke server terputus' };
+    }
+  };
+
   const recoverPasswordWithPin = async (payload: {
     tenantId: string;
     username: string;
     pin: string;
     newPassword: string;
+    otpCode?: string;
+    recoveryKey?: string;
   }) => {
     try {
       const res = await fetch('/api/auth/recover-password-with-pin', {
@@ -550,6 +755,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     username: string;
     password: string;
     newPin: string;
+    otpCode?: string;
+    recoveryKey?: string;
   }) => {
     try {
       const res = await fetch('/api/auth/recover-pin-with-password', {
@@ -568,7 +775,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const recoverWithKey = async (payload: {
-    tenantId: string;
+    tenantId?: string;
     recoveryKey: string;
     newPassword?: string;
     newPin?: string;
@@ -622,9 +829,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         loginStep1,
         loginVerifyPin,
         loginVerifyOtp,
+        loginWaSendOtp,
+        loginWaVerifyOtp,
+        registerWaSendOtp,
         registerStoreDirect,
         registerStoreSendOtp,
         registerStoreComplete,
+        recoveryWaSendOtp,
+        recoveryWaReset,
         recoverPasswordWithPin,
         recoverPinWithPassword,
         recoverWithKey,
