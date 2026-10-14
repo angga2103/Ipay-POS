@@ -279,6 +279,8 @@ export class PPOBService {
         const hash = crypto.createHash('sha256').update(rKey).digest('hex');
         upsert.run('store_recovery_key', rKey);
         upsert.run('store_recovery_key_hash', hash);
+        upsert.run('recovery_key', rKey);
+        upsert.run('recovery_key_created_at', new Date().toISOString());
       }
     });
     tx();
@@ -849,6 +851,8 @@ export class PPOBService {
         const hash = crypto.createHash('sha256').update(rKey).digest('hex');
         db.prepare("INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES ('store_recovery_key', ?, CURRENT_TIMESTAMP)").run(rKey);
         db.prepare("INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES ('store_recovery_key_hash', ?, CURRENT_TIMESTAMP)").run(hash);
+        db.prepare("INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES ('recovery_key', ?, CURRENT_TIMESTAMP)").run(rKey);
+        db.prepare("INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES ('recovery_key_created_at', ?, CURRENT_TIMESTAMP)").run(new Date().toISOString());
         this.recordWebhookEvent(
           'master_key.synced',
           `Master Recovery Key (${rKey}) berhasil disinkronkan dari Admin ipay.my.id!`

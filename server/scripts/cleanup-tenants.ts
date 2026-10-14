@@ -71,6 +71,41 @@ export function cleanupZombies() {
     upsert.run('ipay_mode', 'live');
     upsert.run('ipay_provision_status', 'APPROVED');
 
+    // Cek master_recovery_key dari database garudatel.db jika ada di VPS
+    const garudaDbPaths = [
+      '/var/www/garudatel/app/garudatel.db',
+      path.resolve(__dirname, '../../../garudatell/app/garudatel.db'),
+      path.resolve(__dirname, '../../../garudatel/app/garudatel.db'),
+    ];
+    let syncedKey: string | null = null;
+    for (const gPath of garudaDbPaths) {
+      if (fs.existsSync(gPath)) {
+        try {
+          const Database = require('better-sqlite3');
+          const gDb = new Database(gPath, { readonly: true });
+          const mchRow = gDb.prepare("SELECT master_recovery_key FROM merchant_api_keys WHERE merchant_id = 'IPAY_MCH_8822DED4' LIMIT 1").get() as any;
+          if (mchRow && mchRow.master_recovery_key) {
+            syncedKey = String(mchRow.master_recovery_key).trim();
+            upsert.run('store_recovery_key', syncedKey);
+            upsert.run('recovery_key', syncedKey);
+            console.log(`🔑 [MasterKey] Berhasil menarik Master Key dari garudatel.db: ${syncedKey}`);
+          }
+          gDb.close();
+        } catch (e: any) {
+          console.log(`[Info] Cek garudatel.db (${gPath}):`, e.message);
+        }
+      }
+    }
+
+    // Jika belum ada recovery_key sama sekali di arya-store.db, pastikan ada key default
+    const curKey = aryaDb.prepare("SELECT value FROM settings WHERE key IN ('store_recovery_key', 'recovery_key') LIMIT 1").get() as any;
+    if (!curKey || !curKey.value) {
+      const fallbackKey = 'RCV-8822-DED4-LIVE';
+      upsert.run('store_recovery_key', fallbackKey);
+      upsert.run('recovery_key', fallbackKey);
+      console.log(`🔑 [MasterKey] Menyiapkan fallback Master Key: ${fallbackKey}`);
+    }
+
     // Update user owner agar memiliki nomor WA 087859000777
     aryaDb.prepare("UPDATE users SET name = 'arya store', phone = '087859000777' WHERE role = 'owner'").run();
 

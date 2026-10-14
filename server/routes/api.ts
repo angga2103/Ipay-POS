@@ -1220,6 +1220,24 @@ apiRouter.post('/auth/recover-password-with-pin', async (req: Request, res: Resp
       return res.status(401).json({ error: '6-Digit PIN Keamanan Toko tidak cocok' });
     }
 
+function normalizeRecoveryKey(k: string): string {
+  return String(k || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+}
+
+function verifyTenantRecoveryKey(targetDb: any, inputKey: string): boolean {
+  if (!inputKey) return false;
+  const nInput = normalizeRecoveryKey(inputKey);
+  if (!nInput) return false;
+  try {
+    const rows = targetDb.prepare(
+      "SELECT value FROM settings WHERE key IN ('recovery_key', 'store_recovery_key')"
+    ).all() as Array<{ value?: string }>;
+    return rows.some(r => normalizeRecoveryKey(r.value || '') === nInput);
+  } catch {
+    return false;
+  }
+}
+
     // Wajib verifikasi faktor ke-2 (Kode OTP WhatsApp ATAU Kode Pemulihan Darurat) agar PIN yang diintip tidak bisa membobol Password!
     const targetDb = getTenantDatabase(matched.tenantId);
     const targetPhone = normalizePhone(matched.user.phone || matched.storePhone);
@@ -1234,8 +1252,7 @@ apiRouter.post('/auth/recover-password-with-pin', async (req: Request, res: Resp
         return res.status(401).json({ error: v.error || 'Kode OTP WhatsApp tidak cocok' });
       }
     } else if (recoveryKey) {
-      const storedKeyRow = targetDb.prepare("SELECT value FROM settings WHERE key = 'recovery_key'").get() as any;
-      if (!storedKeyRow?.value || storedKeyRow.value.toUpperCase() !== String(recoveryKey).trim().toUpperCase()) {
+      if (!verifyTenantRecoveryKey(targetDb, String(recoveryKey))) {
         return res.status(401).json({ error: 'Kode Pemulihan Darurat tidak cocok' });
       }
     } else {
@@ -1303,8 +1320,7 @@ apiRouter.post('/auth/recover-pin-with-password', async (req: Request, res: Resp
         return res.status(401).json({ error: v.error || 'Kode OTP WhatsApp tidak cocok' });
       }
     } else if (recoveryKey) {
-      const storedKeyRow = targetDb.prepare("SELECT value FROM settings WHERE key = 'recovery_key'").get() as any;
-      if (!storedKeyRow?.value || storedKeyRow.value.toUpperCase() !== String(recoveryKey).trim().toUpperCase()) {
+      if (!verifyTenantRecoveryKey(targetDb, String(recoveryKey))) {
         return res.status(401).json({ error: 'Kode Pemulihan Darurat tidak cocok' });
       }
     } else {
@@ -1359,8 +1375,7 @@ apiRouter.post('/auth/recover-with-key', (req: Request, res: Response) => {
     for (const id of candidateIds) {
       try {
         const tDb = getTenantDatabase(id);
-        const row = tDb.prepare("SELECT value FROM settings WHERE key = 'recovery_key'").get() as any;
-        if (row?.value && String(row.value).trim().toUpperCase() === cleanKey) {
+        if (verifyTenantRecoveryKey(tDb, cleanKey)) {
           matchedTenantId = id;
           break;
         }
@@ -1388,10 +1403,8 @@ apiRouter.post('/auth/recover-with-key', (req: Request, res: Response) => {
       targetDb.prepare('UPDATE users SET pin = ? WHERE id = ?').run(hashSecret(cleanPin), ownerUser.id);
     }
 
-    // Terbitkan recovery key baru demi keamanan
-    const nextKey = generateRecoveryKey();
-    targetDb.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('recovery_key', ?)").run(nextKey);
-    targetDb.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('recovery_key_created_at', ?)").run(new Date().toISOString());
+    // Catat log pemulihan tanpa merusak Master Key yang sudah sinkron dengan Admin iPay
+    targetDb.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('last_recovery_at', ?)").run(new Date().toISOString());
 
     const storeNameRow = targetDb.prepare("SELECT value FROM settings WHERE key = 'store_name'").get() as any;
     const storePhoneRow = targetDb.prepare("SELECT value FROM settings WHERE key = 'store_phone'").get() as any;
@@ -1402,9 +1415,9 @@ apiRouter.post('/auth/recover-with-key', (req: Request, res: Response) => {
       WhatsAppOtpService.sendMessage(
         ownerPhone,
         `🔐 *[PEMULIHAN DARURAT TOKO ${storeName.toUpperCase()}]*\n\n` +
-        `Akses toko Anda (\`${matchedTenantId}\`) baru saja dipulihkan.\n` +
-        `Kode Pemulihan Darurat Baru Anda:\n*${nextKey}*\n\n` +
-        `_Simpan kode baru ini di tempat yang aman._`
+        `Akses toko Anda (\`${matchedTenantId}\`) baru saja berhasil dipulihkan dengan Master Recovery Key.\n` +
+        `Kata sandi dan/atau PIN keamanan telah diperbarui.\n\n` +
+        `_Kunci Master Recovery Key Anda tetap aman dan terhubung dengan Admin iPay._`
       ).catch(() => {});
     }
 
