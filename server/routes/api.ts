@@ -38,6 +38,60 @@ function maskEmail(email: string): string {
   return `${userPart[0]}***${userPart[userPart.length - 1]}@${domain}`;
 }
 
+export function normalizeRecoveryKey(k: string): string {
+  return String(k || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+}
+
+export function verifyTenantRecoveryKey(targetDb: any, inputKey: string, explicitTenantId?: string): boolean {
+  if (!inputKey) return false;
+  const nInput = normalizeRecoveryKey(inputKey);
+  if (!nInput) return false;
+  try {
+    const rows = targetDb.prepare(
+      "SELECT value FROM settings WHERE key IN ('recovery_key', 'store_recovery_key')"
+    ).all() as Array<{ value?: string }>;
+    if (rows.some(r => normalizeRecoveryKey(r.value || '') === nInput)) {
+      return true;
+    }
+  } catch {}
+
+  // Fallback direct check garudatel.db jika belum sempat tersinkron via webhook
+  const garudaDbPaths = [
+    '/var/www/garudatel/app/garudatel.db',
+    '/root/garudatel_v2/app/garudatel.db',
+    path.resolve(__dirname, '../../../garudatell/app/garudatel.db'),
+    path.resolve(__dirname, '../../../garudatel/app/garudatel.db'),
+    path.resolve(process.cwd(), '../garudatell/app/garudatel.db'),
+    path.resolve(process.cwd(), '../garudatel/app/garudatel.db'),
+  ];
+  for (const gPath of garudaDbPaths) {
+    if (fs.existsSync(gPath)) {
+      try {
+        const Database = require('better-sqlite3');
+        const gDb = new Database(gPath, { readonly: true });
+        const mRows = gDb.prepare(
+          "SELECT master_recovery_key, merchant_id, tenant_id FROM merchant_api_keys WHERE master_recovery_key IS NOT NULL"
+        ).all() as any[];
+        gDb.close();
+        for (const mr of mRows) {
+          if (normalizeRecoveryKey(mr.master_recovery_key) === nInput) {
+            try {
+              const upsert = targetDb.prepare('INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)');
+              upsert.run('store_recovery_key', mr.master_recovery_key);
+              upsert.run('recovery_key', mr.master_recovery_key);
+              if (mr.merchant_id) upsert.run('ipay_merchant_id', mr.merchant_id);
+              upsert.run('ipay_mode', 'live');
+            } catch {}
+            return true;
+          }
+        }
+      } catch {}
+    }
+  }
+
+  return false;
+}
+
 // Ensure held_bills table exists
 db.exec(`
   CREATE TABLE IF NOT EXISTS held_bills (
@@ -1221,60 +1275,6 @@ apiRouter.post('/auth/recover-password-with-pin', async (req: Request, res: Resp
     if (!matched.user.pin || !verifySecret(cleanPin, matched.user.pin)) {
       return res.status(401).json({ error: '6-Digit PIN Keamanan Toko tidak cocok' });
     }
-
-function normalizeRecoveryKey(k: string): string {
-  return String(k || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
-}
-
-function verifyTenantRecoveryKey(targetDb: any, inputKey: string, explicitTenantId?: string): boolean {
-  if (!inputKey) return false;
-  const nInput = normalizeRecoveryKey(inputKey);
-  if (!nInput) return false;
-  try {
-    const rows = targetDb.prepare(
-      "SELECT value FROM settings WHERE key IN ('recovery_key', 'store_recovery_key')"
-    ).all() as Array<{ value?: string }>;
-    if (rows.some(r => normalizeRecoveryKey(r.value || '') === nInput)) {
-      return true;
-    }
-  } catch {}
-
-  // Fallback direct check garudatel.db jika belum sempat tersinkron via webhook
-  const garudaDbPaths = [
-    '/var/www/garudatel/app/garudatel.db',
-    '/root/garudatel_v2/app/garudatel.db',
-    path.resolve(__dirname, '../../../garudatell/app/garudatel.db'),
-    path.resolve(__dirname, '../../../garudatel/app/garudatel.db'),
-    path.resolve(process.cwd(), '../garudatell/app/garudatel.db'),
-    path.resolve(process.cwd(), '../garudatel/app/garudatel.db'),
-  ];
-  for (const gPath of garudaDbPaths) {
-    if (fs.existsSync(gPath)) {
-      try {
-        const Database = require('better-sqlite3');
-        const gDb = new Database(gPath, { readonly: true });
-        const mRows = gDb.prepare(
-          "SELECT master_recovery_key, merchant_id, tenant_id FROM merchant_api_keys WHERE master_recovery_key IS NOT NULL"
-        ).all() as any[];
-        gDb.close();
-        for (const mr of mRows) {
-          if (normalizeRecoveryKey(mr.master_recovery_key) === nInput) {
-            try {
-              const upsert = targetDb.prepare('INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)');
-              upsert.run('store_recovery_key', mr.master_recovery_key);
-              upsert.run('recovery_key', mr.master_recovery_key);
-              if (mr.merchant_id) upsert.run('ipay_merchant_id', mr.merchant_id);
-              upsert.run('ipay_mode', 'live');
-            } catch {}
-            return true;
-          }
-        }
-      } catch {}
-    }
-  }
-
-  return false;
-}
 
     // Wajib verifikasi faktor ke-2 (Kode OTP WhatsApp ATAU Kode Pemulihan Darurat) agar PIN yang diintip tidak bisa membobol Password!
     const targetDb = getTenantDatabase(matched.tenantId);
