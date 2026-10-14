@@ -39,7 +39,21 @@ function maskEmail(email: string): string {
 }
 
 export function normalizeRecoveryKey(k: string): string {
-  return String(k || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+  if (!k) return '';
+  const raw = String(k).trim().toUpperCase();
+  // Toleran jika ada karakter ekstra di ujung (misal 14BCA) atau spasi/strip yang salah
+  // Pola standar: RCV diikuti 12 karakter hex (kelompok 4-4-4)
+  const match = raw.match(/RCV[-_\s]?([A-F0-9]{4})[-_\s]?([A-F0-9]{4})[-_\s]?([A-F0-9]{4})/i);
+  if (match) {
+    return `RCV${match[1]}${match[2]}${match[3]}`.toUpperCase();
+  }
+  // Jika tanpa awalan RCV, cari 12 karakter hex berturutan
+  const hexMatch = raw.match(/([A-F0-9]{4})[-_\s]?([A-F0-9]{4})[-_\s]?([A-F0-9]{4})/i);
+  if (hexMatch) {
+    return `RCV${hexMatch[1]}${hexMatch[2]}${hexMatch[3]}`.toUpperCase();
+  }
+  // Fallback: hapus semua karakter non-alphanumeric
+  return raw.replace(/[^A-Z0-9]/g, '');
 }
 
 export function verifyTenantRecoveryKey(targetDb: any, inputKey: string, explicitTenantId?: string): boolean {
@@ -1533,8 +1547,8 @@ apiRouter.post('/auth/recover-with-key', (req: Request, res: Response) => {
       success: true,
       tenantId: matchedTenantId,
       storeName,
-      newRecoveryKey: nextKey,
-      message: `Akses akun "${storeName}" (ID: ${matchedTenantId}) berhasil dipulihkan! Simpan Kode Pemulihan baru Anda.`,
+      newRecoveryKey: cleanKey,
+      message: `Akses akun "${storeName}" (ID: ${matchedTenantId}) berhasil dipulihkan! Kata sandi dan/atau PIN Anda telah diperbarui.`,
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message });

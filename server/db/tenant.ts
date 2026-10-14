@@ -574,6 +574,17 @@ export function resolveExistingTenantId(input: string | undefined | null): strin
     } catch {}
   }
 
+  // 3. Match by ipay_merchant_id in settings across existing tenants
+  for (const id of existingIds) {
+    try {
+      const tDb = getTenantDatabase(id);
+      const row = tDb.prepare("SELECT value FROM settings WHERE key = 'ipay_merchant_id'").get() as { value?: string } | undefined;
+      if (row?.value && row.value.trim().toLowerCase() === raw.toLowerCase()) {
+        return id;
+      }
+    } catch {}
+  }
+
   return null;
 }
 

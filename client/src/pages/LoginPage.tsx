@@ -1985,7 +1985,13 @@ export const LoginPage: React.FC = () => {
                       <input
                         type="text"
                         value={emergencyKey}
-                        onChange={e => setEmergencyKey(e.target.value.toUpperCase())}
+                        onChange={e => {
+                          let val = e.target.value.trim().toUpperCase();
+                          if (val.startsWith('RCV-') && val.length > 16) {
+                            val = val.substring(0, 16);
+                          }
+                          setEmergencyKey(val);
+                        }}
                         placeholder="RCV-XXXX-XXXX-XXXX"
                         className="w-full px-3 py-2.5 bg-slate-950 border border-amber-500/40 rounded-xl text-white text-xs font-mono tracking-wider font-bold"
                         required

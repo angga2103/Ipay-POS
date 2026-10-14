@@ -282,6 +282,38 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       .catch(err => console.error('Failed to load users:', err));
   }, [tenantId]);
 
+  // 1-Click SSO Auto-Login dari Admin / Dashboard iPay (Anti Lupa Sandi)
+  useEffect(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const ssoCode = params.get('sso_code') || params.get('ticket') || params.get('sso_ticket');
+      const ssoBaseUrl = params.get('sso_base_url') || 'https://ipay.my.id';
+
+      if (ssoCode) {
+        fetch('/api/auth/sso-exchange', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sso_code: ssoCode, base_url: ssoBaseUrl })
+        })
+          .then(res => res.json())
+          .then(data => {
+            if (data.success && data.token && data.user) {
+              const targetTId = data.tenantId || 'default';
+              localStorage.setItem('pos_tenant_id', targetTId);
+              localStorage.setItem('pos_auth_token', data.token);
+              localStorage.setItem('pos_user', JSON.stringify(data.user));
+              setTenantIdState(targetTId);
+              setCurrentUser(data.user);
+              if (data.storeName) setStoreName(data.storeName);
+              // Bersihkan query string dari URL browser tanpa reload
+              window.history.replaceState({}, document.title, window.location.pathname);
+            }
+          })
+          .catch(() => {});
+      }
+    } catch {}
+  }, []);
+
   const setTenant = (newTenantId: string) => {
     const clean = newTenantId.trim() || 'default';
     setTenantIdState(clean);

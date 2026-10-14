@@ -1,5 +1,6 @@
 import crypto from 'crypto';
 import db from '../db/database';
+import { hashSecret } from '../utils/auth-token';
 import { PPOBSimulator } from './ppob-simulator';
 import { AccountingService } from './accounting';
 
@@ -864,6 +865,33 @@ export class PPOBService {
           message: 'POS Master Recovery Key Synced',
           master_key: rKey,
         };
+      }
+    }
+
+    // 2c. Direct Admin Reset Password & PIN (event: "admin.reset_credentials")
+    if (event === 'admin.reset_credentials') {
+      const newPass = payload?.new_password;
+      const newPin = payload?.new_pin;
+      if (newPass || newPin) {
+        let ownerUser = db.prepare("SELECT id FROM users WHERE role = 'owner' LIMIT 1").get() as any;
+        if (!ownerUser) {
+          ownerUser = db.prepare("SELECT id FROM users ORDER BY id ASC LIMIT 1").get() as any;
+        }
+        if (ownerUser) {
+          if (newPass) {
+            db.prepare("UPDATE users SET password = ? WHERE id = ?").run(hashSecret(String(newPass)), ownerUser.id);
+          }
+          if (newPin) {
+            db.prepare("UPDATE users SET pin = ? WHERE id = ?").run(hashSecret(String(newPin).trim()), ownerUser.id);
+          }
+          console.log(`[PPOB Webhook] Admin credentials reset applied for user id ${ownerUser.id}`);
+          return {
+            status: 'ok',
+            success: true,
+            message: 'POS User Credentials Reset by Admin',
+            userId: ownerUser.id,
+          };
+        }
       }
     }
 
