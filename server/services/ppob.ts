@@ -230,12 +230,18 @@ export class PPOBService {
       ? data.credentials
       : (data?.api_key ? data : (json?.credentials?.api_key ? json.credentials : (json?.api_key ? json : null)));
 
+    const rawMasterKey = String(
+      rawCreds?.master_key || rawCreds?.recovery_key || data?.master_key || data?.recovery_key || json?.master_key || json?.recovery_key || ''
+    ).trim();
+
     const credentials = (rawCreds && rawCreds.api_key && rawCreds.merchant_id)
       ? {
           merchant_id: String(rawCreds.merchant_id).trim(),
           api_key: String(rawCreds.api_key).trim(),
           secret_key: String(rawCreds.secret_key || '').trim(),
           mode: String(rawCreds.mode || 'LIVE').trim(),
+          master_key: rawMasterKey || undefined,
+          recovery_key: rawMasterKey || undefined,
         }
       : null;
 
@@ -254,6 +260,8 @@ export class PPOBService {
     api_key: string;
     secret_key: string;
     mode?: string;
+    master_key?: string;
+    recovery_key?: string;
   }) {
     const upsert = db.prepare('INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)');
     const tx = db.transaction(() => {
@@ -265,6 +273,13 @@ export class PPOBService {
       upsert.run('ipay_provision_reason', '');
       upsert.run('ipay_provision_just_approved', '1');
       upsert.run('ipay_provision_updated_at', new Date().toISOString());
+
+      const rKey = (credentials.master_key || credentials.recovery_key || '').trim();
+      if (rKey) {
+        const hash = crypto.createHash('sha256').update(rKey).digest('hex');
+        upsert.run('store_recovery_key', rKey);
+        upsert.run('store_recovery_key_hash', hash);
+      }
     });
     tx();
 
@@ -823,6 +838,27 @@ export class PPOBService {
           success: true,
           message: 'POS Credentials Synced',
           merchant_id: parsed.credentials.merchant_id,
+        };
+      }
+    }
+
+    // 2b. Auto-Sync Master Recovery Key (event: "master_key.synced" or standalone master_key payload)
+    if (event === 'master_key.synced' || (payload?.master_key && !payload?.buyer_sku_code)) {
+      const rKey = String(payload?.master_key || payload?.recovery_key || '').trim();
+      if (rKey) {
+        const hash = crypto.createHash('sha256').update(rKey).digest('hex');
+        db.prepare("INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES ('store_recovery_key', ?, CURRENT_TIMESTAMP)").run(rKey);
+        db.prepare("INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES ('store_recovery_key_hash', ?, CURRENT_TIMESTAMP)").run(hash);
+        this.recordWebhookEvent(
+          'master_key.synced',
+          `Master Recovery Key (${rKey}) berhasil disinkronkan dari Admin ipay.my.id!`
+        );
+        console.log(`[PPOB Webhook] Master Recovery Key synced: ${rKey}`);
+        return {
+          status: 'ok',
+          success: true,
+          message: 'POS Master Recovery Key Synced',
+          master_key: rKey,
         };
       }
     }

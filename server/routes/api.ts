@@ -4734,4 +4734,19 @@ apiRouter.post('/backup/restore', requireRole('owner'), async (req: Request, res
   }
 });
 
+// Endpoint Pembersihan Akun Toko Zombi / Sampah Testing Lama
+apiRouter.post('/tenant/cleanup-zombies', requireRole('owner'), async (_req: Request, res: Response) => {
+  try {
+    const { cleanupZombies } = await import('../scripts/cleanup-tenants');
+    cleanupZombies();
+    res.json({
+      success: true,
+      message: 'Pembersihan database zombi selesai! Hanya toko resmi (arya-store & default) yang dipertahankan.',
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
 
