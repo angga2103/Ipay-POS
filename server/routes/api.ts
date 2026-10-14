@@ -1224,7 +1224,7 @@ function normalizeRecoveryKey(k: string): string {
   return String(k || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
 }
 
-function verifyTenantRecoveryKey(targetDb: any, inputKey: string): boolean {
+function verifyTenantRecoveryKey(targetDb: any, inputKey: string, explicitTenantId?: string): boolean {
   if (!inputKey) return false;
   const nInput = normalizeRecoveryKey(inputKey);
   if (!nInput) return false;
@@ -1232,10 +1232,46 @@ function verifyTenantRecoveryKey(targetDb: any, inputKey: string): boolean {
     const rows = targetDb.prepare(
       "SELECT value FROM settings WHERE key IN ('recovery_key', 'store_recovery_key')"
     ).all() as Array<{ value?: string }>;
-    return rows.some(r => normalizeRecoveryKey(r.value || '') === nInput);
-  } catch {
-    return false;
+    if (rows.some(r => normalizeRecoveryKey(r.value || '') === nInput)) {
+      return true;
+    }
+  } catch {}
+
+  // Fallback direct check garudatel.db jika belum sempat tersinkron via webhook
+  const garudaDbPaths = [
+    '/var/www/garudatel/app/garudatel.db',
+    '/root/garudatel_v2/app/garudatel.db',
+    path.resolve(__dirname, '../../../garudatell/app/garudatel.db'),
+    path.resolve(__dirname, '../../../garudatel/app/garudatel.db'),
+    path.resolve(process.cwd(), '../garudatell/app/garudatel.db'),
+    path.resolve(process.cwd(), '../garudatel/app/garudatel.db'),
+  ];
+  for (const gPath of garudaDbPaths) {
+    if (fs.existsSync(gPath)) {
+      try {
+        const Database = require('better-sqlite3');
+        const gDb = new Database(gPath, { readonly: true });
+        const mRows = gDb.prepare(
+          "SELECT master_recovery_key, merchant_id, tenant_id FROM merchant_api_keys WHERE master_recovery_key IS NOT NULL"
+        ).all() as any[];
+        gDb.close();
+        for (const mr of mRows) {
+          if (normalizeRecoveryKey(mr.master_recovery_key) === nInput) {
+            try {
+              const upsert = targetDb.prepare('INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)');
+              upsert.run('store_recovery_key', mr.master_recovery_key);
+              upsert.run('recovery_key', mr.master_recovery_key);
+              if (mr.merchant_id) upsert.run('ipay_merchant_id', mr.merchant_id);
+              upsert.run('ipay_mode', 'live');
+            } catch {}
+            return true;
+          }
+        }
+      } catch {}
+    }
   }
+
+  return false;
 }
 
     // Wajib verifikasi faktor ke-2 (Kode OTP WhatsApp ATAU Kode Pemulihan Darurat) agar PIN yang diintip tidak bisa membobol Password!
@@ -1383,13 +1419,81 @@ apiRouter.post('/auth/recover-with-key', (req: Request, res: Response) => {
     }
 
     if (!matchedTenantId) {
+      // 2. Direct Bridge ke database garudatel.db jika belum sempat tersinkron via webhook
+      const garudaDbPaths = [
+        '/var/www/garudatel/app/garudatel.db',
+        '/root/garudatel_v2/app/garudatel.db',
+        path.resolve(__dirname, '../../../garudatell/app/garudatel.db'),
+        path.resolve(__dirname, '../../../garudatel/app/garudatel.db'),
+        path.resolve(process.cwd(), '../garudatell/app/garudatel.db'),
+        path.resolve(process.cwd(), '../garudatel/app/garudatel.db'),
+      ];
+
+      const normInput = normalizeRecoveryKey(cleanKey);
+      for (const gPath of garudaDbPaths) {
+        if (fs.existsSync(gPath)) {
+          try {
+            const Database = require('better-sqlite3');
+            const gDb = new Database(gPath, { readonly: true });
+            const rows = gDb.prepare(
+              "SELECT id, merchant_id, name, webhook_url, tenant_id, master_recovery_key, secret_key, api_key FROM merchant_api_keys WHERE master_recovery_key IS NOT NULL"
+            ).all() as any[];
+            gDb.close();
+
+            for (const r of rows) {
+              if (normalizeRecoveryKey(r.master_recovery_key) === normInput) {
+                let tSlug = (r.tenant_id || '').trim();
+                if (!tSlug && r.webhook_url && r.webhook_url.includes('tenant_id=')) {
+                  try {
+                    const qs = new URLSearchParams(r.webhook_url.split('?')[1] || '');
+                    tSlug = qs.get('tenant_id') || '';
+                  } catch {}
+                }
+                if (!tSlug) {
+                  tSlug = (r.name || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').replace(/^pos-/, '') || `store-${r.id}`;
+                }
+
+                // Sync langsung ke database tenant lokal
+                const targetDb = getTenantDatabase(tSlug, r.name);
+                const upsert = targetDb.prepare('INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)');
+                upsert.run('store_recovery_key', r.master_recovery_key);
+                upsert.run('recovery_key', r.master_recovery_key);
+                upsert.run('ipay_merchant_id', r.merchant_id);
+                if (r.api_key) upsert.run('ipay_api_key', r.api_key);
+                if (r.secret_key) upsert.run('ipay_secret_key', r.secret_key);
+                upsert.run('ipay_mode', 'live');
+                upsert.run('ipay_provision_status', 'APPROVED');
+
+                console.log(`[Bridge MasterKey] Ditemukan di garudatel.db (${gPath}) untuk toko '${r.name}' (Tenant: ${tSlug}). Tersinkron!`);
+                matchedTenantId = tSlug;
+                break;
+              }
+            }
+            if (matchedTenantId) break;
+          } catch (err: any) {
+            console.warn(`[Bridge MasterKey] Error membaca ${gPath}:`, err.message);
+          }
+        }
+      }
+    }
+
+    if (!matchedTenantId) {
       return res.status(401).json({ error: 'Kode Pemulihan Darurat tidak cocok dengan toko mana pun' });
     }
 
     const targetDb = getTenantDatabase(matchedTenantId);
-    const ownerUser = targetDb.prepare("SELECT id, phone FROM users WHERE role = 'owner' LIMIT 1").get() as any;
+    let ownerUser = targetDb.prepare("SELECT id, phone FROM users WHERE role = 'owner' LIMIT 1").get() as any;
     if (!ownerUser) {
-      return res.status(404).json({ error: 'Akun Owner tidak ditemukan di database toko' });
+      ownerUser = targetDb.prepare("SELECT id, phone FROM users ORDER BY id ASC LIMIT 1").get() as any;
+      if (!ownerUser) {
+        const storePhoneRow = targetDb.prepare("SELECT value FROM settings WHERE key = 'store_phone'").get() as any;
+        const phoneVal = storePhoneRow?.value || '087859000777';
+        const ins = targetDb.prepare(`
+          INSERT INTO users (username, password, name, role, pin, phone)
+          VALUES ('owner', ?, 'Pemilik Toko', 'owner', ?, ?)
+        `).run(hashSecret(newPassword || 'admin123'), hashSecret(newPin || '112233'), phoneVal);
+        ownerUser = { id: ins.lastInsertRowid, phone: phoneVal };
+      }
     }
 
     if (newPassword) {
