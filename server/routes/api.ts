@@ -26,6 +26,7 @@ import { ServiceDeskService } from '../services/service-desk';
 import { BackupService } from '../services/backup';
 import { MailerService } from '../services/mailer';
 import { WhatsAppOtpService, normalizePhone, maskPhone, checkAuthRateLimit, resetAuthRateLimit } from '../services/whatsapp';
+import { IpayMemberBridge } from '../services/ipay-member-bridge';
 
 export const apiRouter = Router();
 
@@ -174,7 +175,27 @@ apiRouter.post('/auth/login-step1', async (req: Request, res: Response) => {
     }
 
     // Cari seluruh kandidat toko yang memiliki user (No WA / Username / Email / Nama) tersebut
-    const candidates = findTenantsByUserIdentifier(cleanInput, explicitResolvedId);
+    let candidates = findTenantsByUserIdentifier(cleanInput, explicitResolvedId);
+
+    // Jika belum ditemukan di database tenant lokal, cek apakah user terdaftar sebagai member di ipay.my.id!
+    if (candidates.length === 0) {
+      try {
+        const memberSync = await IpayMemberBridge.discoverAndProvisionMember(cleanInput, password);
+        if (memberSync.isMember) {
+          if (memberSync.passwordValid === true) {
+            // Member ditemukan dan password IPAY cocok! Ambil kandidat toko yang baru saja disinkronkan
+            candidates = findTenantsByUserIdentifier(cleanInput, memberSync.tenantId);
+          } else {
+            // Member ditemukan di ipay.my.id tetapi password tidak cocok
+            return res.status(401).json({
+              error: `Nomor WhatsApp Anda terdaftar sebagai member IPAY.MY.ID (${memberSync.userName || 'Member'}), namun kata sandi salah. Silakan masukkan kata sandi akun IPAY Anda atau gunakan tab "Login via OTP WhatsApp" untuk masuk instan tanpa sandi.`,
+            });
+          }
+        }
+      } catch (err: any) {
+        console.warn('[login-step1] Error checking ipay member bridge:', err.message);
+      }
+    }
 
     // Jika user eksplisit memilih ID toko tertentu yang valid, prioritaskan cek di toko tersebut
     if (explicitResolvedId) {
@@ -373,10 +394,22 @@ apiRouter.post('/auth/login-wa-send-otp', async (req: Request, res: Response) =>
       ? resolveExistingTenantId(tenantId)
       : null;
 
-    const matches = findTenantsByUserIdentifier(cleanPhone, explicitTenant);
+    let matches = findTenantsByUserIdentifier(cleanPhone, explicitTenant);
+    if (matches.length === 0) {
+      // Coba sinkronisasi otomatis jika nomor WA ini adalah member terdaftar di ipay.my.id!
+      try {
+        const memberSync = await IpayMemberBridge.discoverAndProvisionMember(cleanPhone);
+        if (memberSync.success && memberSync.tenantId) {
+          matches = findTenantsByUserIdentifier(cleanPhone, memberSync.tenantId);
+        }
+      } catch (err: any) {
+        console.warn('[login-wa-send-otp] Error checking ipay member bridge:', err.message);
+      }
+    }
+
     if (matches.length === 0) {
       return res.status(404).json({
-        error: `Nomor WhatsApp ${cleanPhone} belum terdaftar di toko mana pun. Silakan daftar terlebih dahulu di tab "Daftar Toko Baru".`,
+        error: `Nomor WhatsApp ${cleanPhone} belum terdaftar di toko mana pun maupun di ipay.my.id. Silakan daftar terlebih dahulu di tab "Daftar Toko Baru".`,
       });
     }
 
@@ -435,7 +468,18 @@ apiRouter.post('/auth/login-wa-verify-otp', async (req: Request, res: Response) 
       ? resolveExistingTenantId(tenantId)
       : null;
 
-    const matches = findTenantsByUserIdentifier(cleanPhone, explicitTenant);
+    let matches = findTenantsByUserIdentifier(cleanPhone, explicitTenant);
+    if (matches.length === 0) {
+      try {
+        const memberSync = await IpayMemberBridge.discoverAndProvisionMember(cleanPhone);
+        if (memberSync.success && memberSync.tenantId) {
+          matches = findTenantsByUserIdentifier(cleanPhone, memberSync.tenantId);
+        }
+      } catch (err: any) {
+        console.warn('[login-wa-verify-otp] Error checking ipay member bridge:', err.message);
+      }
+    }
+
     if (matches.length === 0) {
       return res.status(404).json({ error: 'Data akun toko tidak ditemukan untuk nomor WhatsApp ini' });
     }
@@ -447,6 +491,15 @@ apiRouter.post('/auth/login-wa-verify-otp', async (req: Request, res: Response) 
     if (matched.user.is_active === 0) {
       return res.status(403).json({ error: 'Akun operator ini sedang dinonaktifkan oleh Owner Toko' });
     }
+
+    // Background refresh saldo PPOB live dari ipay.my.id
+    setTimeout(() => {
+      tenantContext.run({ tenantId: matched.tenantId, db: getTenantDatabase(matched.tenantId) }, async () => {
+        try {
+          await PPOBService.getBalance(true);
+        } catch {}
+      });
+    }, 100);
 
     const token = createAuthToken({
       tenantId: matched.tenantId,
@@ -624,21 +677,31 @@ apiRouter.post('/auth/register-store', async (req: Request, res: Response) => {
     let provisionResult: any = null;
     if (autoProvisionPpob !== false) {
       try {
-        provisionResult = await new Promise((resolve) => {
-          tenantContext.run({ tenantId: baseSlug, db: newTenantDb }, async () => {
-            try {
-              const r = await PPOBService.requestAutoProvision({
-                storeName: storeName.trim(),
-                ownerName: ownerName.trim(),
-                phone: cleanPhone,
-                tenantId: baseSlug,
-              });
-              resolve(r);
-            } catch {
-              resolve(null);
-            }
+        // Prioritaskan sinkronisasi instan jika nomor ini sudah menjadi member di ipay.my.id!
+        const memberSync = await IpayMemberBridge.discoverAndProvisionMember(cleanPhone, password, storeName.trim());
+        if (memberSync.isMember && memberSync.success) {
+          provisionResult = {
+            success: true,
+            status: 'APPROVED',
+            message: `Member terdaftar di ipay.my.id! Saldo Rp ${Number(memberSync.balance || 0).toLocaleString('id-ID')} langsung tersinkron.`,
+          };
+        } else {
+          provisionResult = await new Promise((resolve) => {
+            tenantContext.run({ tenantId: baseSlug, db: newTenantDb }, async () => {
+              try {
+                const r = await PPOBService.requestAutoProvision({
+                  storeName: storeName.trim(),
+                  ownerName: ownerName.trim(),
+                  phone: cleanPhone,
+                  tenantId: baseSlug,
+                });
+                resolve(r);
+              } catch {
+                resolve(null);
+              }
+            });
           });
-        });
+        }
       } catch {}
     }
 
@@ -2433,6 +2496,25 @@ apiRouter.get('/ppob/balance', async (_req: Request, res: Response) => {
     res.json(data);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// Sinkronisasi Paksa Saldo PPOB Live & COA Kas dari ipay.my.id
+apiRouter.post('/ppob/balance/sync', async (_req: Request, res: Response) => {
+  try {
+    const data = await PPOBService.getBalance(true);
+    res.json({ success: true, ...data });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+apiRouter.post('/tenant/sync-ipay-balance', async (_req: Request, res: Response) => {
+  try {
+    const data = await PPOBService.getBalance(true);
+    res.json({ success: true, ...data });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 

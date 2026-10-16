@@ -600,6 +600,9 @@ export class PPOBService {
                 if (typeof liveBal === 'number') {
                   currentBalance = liveBal;
                   gotBalance = true;
+                  try {
+                    db.prepare("UPDATE chart_of_accounts SET balance = ? WHERE code = '1-1003'").run(liveBal);
+                  } catch {}
                   break;
                 }
               }
